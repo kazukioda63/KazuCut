@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body {
+      font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
+      font-size: 12px;
+      margin: 0;
+      padding: 10px;
+      color: var(--uxp-host-text-color, #e5e5e5);
+      background-color: var(--uxp-host-background-color, #232323);
+    }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    .section { margin-bottom: 12px; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .row label { min-width: 110px; }
+    select, input[type="number"], input[type="text"] {
+      background: #1b1b1b; color: inherit; border: 1px solid #555;
+      border-radius: 3px; padding: 3px 6px; min-width: 140px;
+    }
+    button {
+      background: #2d5fa8; color: #fff; border: none; border-radius: 4px;
+      padding: 7px 14px; cursor: pointer; font-size: 12px;
+    }
+    button:disabled { background: #555; cursor: default; }
+    button.secondary { background: #444; }
+    #banner {
+      background: #6b4b12; color: #ffd; padding: 6px 8px; border-radius: 4px;
+      margin-bottom: 10px; display: none; white-space: pre-wrap;
+    }
+    #progressArea { display: none; margin: 10px 0; }
+    #progressBar { width: 100%; height: 8px; background: #333; border-radius: 4px; }
+    #progressFill { height: 100%; width: 0; background: #2d8f5a; border-radius: 4px; }
+    #results { margin-top: 10px; }
+    .candidate {
+      border: 1px solid #444; border-radius: 4px; padding: 6px 8px; margin: 5px 0;
+      display: flex; gap: 8px; align-items: flex-start;
+    }
+    .candidate .meta { flex: 1; }
+    .candidate .time { font-weight: bold; }
+    .candidate .warn { color: #e0a942; font-size: 11px; }
+    details { border: 1px solid #444; border-radius: 4px; padding: 6px 8px; }
+    summary { cursor: pointer; }
+    .muted { color: #999; font-size: 11px; }
+    #summaryLine { margin: 8px 0; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>KazuCut Local</h1>
+  <div id="banner"></div>
+
+  <div class="section">
+    <div class="row">
+      <label>対象</label>
+      <select id="scopeSelect">
+        <option value="selection">選択クリップ</option>
+        <option value="track">Aロールトラック全体</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>映像トラック</label>
+      <select id="videoTrackSelect"></select>
+    </div>
+    <div class="row">
+      <label>会話音声トラック</label>
+      <select id="audioTrackSelect"></select>
+    </div>
+    <div class="row">
+      <label>プリセット</label>
+      <select id="presetSelect"></select>
+    </div>
+    <div class="row">
+      <label>無音処理</label>
+      <input type="checkbox" id="silenceEnabled" checked />
+    </div>
+    <div class="row">
+      <label>無音の扱い</label>
+      <select id="silenceMode">
+        <option value="shorten">指定時間まで短縮</option>
+        <option value="remove">完全削除</option>
+      </select>
+      <input type="number" id="retainMs" min="0" max="5000" step="10" style="width:70px" />
+      <span class="muted">ms残す</span>
+    </div>
+    <div class="row">
+      <label>フィラー削除</label>
+      <input type="checkbox" id="fillerEnabled" />
+    </div>
+    <div id="fillerSettings" style="display:none">
+      <div class="row">
+        <label>文字起こし方式</label>
+        <select id="transcriptSource">
+          <option value="auto">自動：Premiere優先</option>
+          <option value="premiere">Premiereのみ</option>
+          <option value="whisper">ローカルWhisperのみ</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Whisperモデル</label>
+        <span id="whisperModelStatus">未設定</span>
+        <button class="secondary" id="pickModelButton">選択...</button>
+      </div>
+      <div class="row">
+        <label>削除後の間</label>
+        <input type="number" id="fillerGapMs" min="0" max="1000" step="10" value="80" style="width:70px" />
+        <span class="muted">ms</span>
+      </div>
+    </div>
+    <div class="row">
+      <label>出力</label>
+      <select id="outputMode">
+        <option value="duplicate">複製シーケンスで編集</option>
+        <option value="direct">元シーケンスを直接編集（上級者向け）</option>
+      </select>
+    </div>
+  </div>
+
+  <details class="section">
+    <summary>▶ 詳細設定</summary>
+    <div class="row"><label>自動しきい値</label><input type="checkbox" id="autoThreshold" checked /></div>
+    <div class="row"><label>手動しきい値</label><input type="number" id="manualThresholdDb" min="-90" max="0" style="width:70px" /><span class="muted">dB</span></div>
+    <div class="row"><label>ノイズマージン</label><input type="number" id="noiseMarginDb" min="0" max="40" style="width:70px" /><span class="muted">dB</span></div>
+    <div class="row"><label>ヒステリシス</label><input type="number" id="hysteresisDb" min="0" max="20" style="width:70px" /><span class="muted">dB</span></div>
+    <div class="row"><label>最小無音時間</label><input type="number" id="minSilenceMs" min="50" max="10000" style="width:70px" /><span class="muted">ms</span></div>
+    <div class="row"><label>前側余白</label><input type="number" id="prePaddingMs" min="0" max="1000" style="width:70px" /><span class="muted">ms</span></div>
+    <div class="row"><label>後側余白</label><input type="number" id="postPaddingMs" min="0" max="1000" style="width:70px" /><span class="muted">ms</span></div>
+    <div class="row"><label>近接結合</label><input type="number" id="mergeGapMs" min="0" max="2000" style="width:70px" /><span class="muted">ms</span></div>
+    <div class="row"><label>最小発話長</label><input type="number" id="minSpeechMs" min="0" max="2000" style="width:70px" /><span class="muted">ms</span></div>
+    <div class="row"><label>VAD</label><input type="checkbox" id="vadEnabled" checked /></div>
+    <div class="row"><label>VAD感度</label>
+      <select id="vadSensitivity">
+        <option value="0">0：緩い</option><option value="1">1：標準</option>
+        <option value="2" selected>2：やや厳しい</option><option value="3">3：厳しい</option>
+      </select>
+    </div>
+    <div class="row"><label>小声保護</label><input type="checkbox" id="quietVoiceProtection" checked /></div>
+    <div class="row"><label>チャンネル</label>
+      <select id="channelMode">
+        <option value="auto">自動</option><option value="left">左</option>
+        <option value="right">右</option><option value="mix">平均ミックス</option>
+        <option value="max-energy">最大エネルギー</option>
+      </select>
+    </div>
+    <div class="row"><label>先頭無音を処理</label><input type="checkbox" id="processLeadingSilence" checked /></div>
+    <div class="row"><label>末尾無音を処理</label><input type="checkbox" id="processTrailingSilence" checked /></div>
+    <div class="row"><button class="secondary" id="savePresetButton">現在の設定をプリセット保存</button></div>
+  </details>
+
+  <div class="section">
+    <button id="analyzeButton">解析する</button>
+    <button class="secondary" id="probeButton">API Probe実行</button>
+  </div>
+
+  <div id="progressArea">
+    <div>音声を解析中 <span id="progressPercent">0%</span></div>
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <div class="muted" id="progressStage">現在：準備しています</div>
+    <button class="secondary" id="cancelButton">キャンセル</button>
+  </div>
+
+  <div id="results"></div>
+  <div id="summaryLine"></div>
+  <div class="section" id="applyArea" style="display:none">
+    <div class="muted" id="applySummary"></div>
+    <div class="row">
+      <input type="checkbox" id="confirmProtect" checked disabled />
+      <span>元シーケンスを保護して編集します</span>
+    </div>
+    <button id="applyButton">選択した候補を適用</button>
+  </div>
+
+  <script src="dist/main.js"></script>
+</body>
+</html>

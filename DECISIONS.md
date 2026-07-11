@@ -23,3 +23,14 @@
   実素材評価し、不足ならWebRTC VAD(BSD-3)のベンダリングへ切替。→ ADR-002追記
 - **D-009**: C++ユニットテストはCatch2 v3（単一ヘッダamalgamated版をベンダリング、
   Boost Software License 1.0）。ネットワーク非依存でビルド可能にするため。
+
+- **D-010**: whisper.cpp実行本体は未統合とする。Windowsビルド環境がなく検証不能なため、
+  「未検証の完成報告」を避け、モデル設定時はWHISPER_FAILEDで未対応を明示（BLOCKING_REPORT 3）。
+- **D-011**: uxpPremiereAdapter（実DOM操作）はAPI Probe結果を得るまで実装しない。
+  Clone/削除/移動Actionの実挙動を推測でコード化しないため（ADR-003）。
+  Panel側はPremiereAdapter抽象+Mockで全ロジックをテスト済み。
+- **D-012**: ノイズフロア推定はp10パーセンタイル+Clamp[-85,-25]dB。
+  当初のmedian-2*MAD併用案は発話優勢素材でフロアを押し上げる欠陥があり
+  テストで検出したため廃止（silence_detector.cpp）。
+- **D-013**: Worker引数は --job <file> / --job-stdin。stdinがIPCチャネルの場合は
+  stdinクローズ=親死亡とみなし自己終了（孤児防止をJob Objectと二重化）。
