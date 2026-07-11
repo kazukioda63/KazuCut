@@ -1,0 +1,14 @@
+node_modules/
+build/
+plugin/dist/
+plugin/win/x64/*.uxpaddon
+plugin/win/x64/*.exe
+plugin/win/x64/*.dll
+models/*.bin
+models/*.gguf
+*.log
+.vs/
+.vscode/
+dist/
+coverage/
+*.tsbuildinfo
