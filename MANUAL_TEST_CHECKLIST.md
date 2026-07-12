@@ -4,7 +4,7 @@ Mock成功は実機成功ではない。以下はすべて**Windows + Premiere P
 実施結果は各項目へ 日付/OK/NG/メモ を記入し、NGはADRまたはBLOCKING_REPORT.mdへ。
 
 事前準備: `doctor.ps1` 全OK → `build.ps1` → `prepare-dist.ps1` →
-UDTで `build\dist\KazuCutLocal\manifest.json` をLoad。
+UXP Developer Toolで `build\dist\KazuCutLocal\manifest.json` をLoad。
 
 | # | 項目 | 手順 | 期待結果 | 結果 |
 |---|---|---|---|---|

@@ -49,12 +49,12 @@ Adobe Premiere Pro 26.3.0（Windows）用のUXP Hybrid Pluginです。
 
 ## 8. UXP Developer Tool
 
-Creative CloudからUXP Developer Tool（UDT）をインストールしてください。
-プラグインの読み込み・最終CCXパッケージはUDTで行います。
+Creative CloudからUXP Developer Toolをインストールしてください。
+プラグインの読み込み・最終CCXパッケージはUXP Developer Toolで行います。
 
 ## 9. Developer Mode
 
-Premiere Pro の環境設定でDeveloper Modeを有効にしてください（UDTからの読み込みに必要）。
+Premiere Pro の環境設定でDeveloper Modeを有効にしてください（UXP Developer Toolからの読み込みに必要）。
 
 ## 10. セットアップ
 
@@ -82,7 +82,7 @@ cmake -S worker -B build/worker && cmake --build build/worker -j && build/worker
 ## 12. Premiereへの読み込み
 
 1. `.\scripts\prepare-dist.ps1` で `build\dist\KazuCutLocal` を生成
-2. UDT → Add Plugin → `build\dist\KazuCutLocal\manifest.json`
+2. UXP Developer Tool → Add Plugin → `build\dist\KazuCutLocal\manifest.json`
 3. Load → PremiereにKazuCut Localパネルが表示される
 
 ## 13. 無音処理
@@ -133,7 +133,7 @@ cmake -S worker -B build/worker && cmake --build build/worker -j && build/worker
 
 ## 21. アンインストール
 
-UDTでUnload → プラグインフォルダ削除 → `plugin-data:/` の設定・ログ・キャッシュを削除。
+UXP Developer ToolでUnload → プラグインフォルダ削除 → `plugin-data:/` の設定・ログ・キャッシュを削除。
 
 ## 22. 既知の制限
 

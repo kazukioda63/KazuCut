@@ -27,7 +27,7 @@ Phase 10相当（移植可能部分）/ Phase 1・2・3の実機検証はWindows
 - 実素材評価（素材提供待ち）
 
 ## Next
-1. ユーザー: SDK_SETUP_REQUIRED.mdの3ステップ（UDT導入→ZIP展開→plugin/読込。ビルド不要）
+1. ユーザー: SDK_SETUP_REQUIRED.mdの3ステップ（UXP Developer Tool導入→ZIP展開→plugin/読込。ビルド不要）
 2. 実機: MANUAL_TEST_CHECKLIST Phase 1検証 → ADR-001確定
 3. 実機: API Probe実行 → 結果を基にuxpPremiereAdapter実装 → 500ms削除実証
 4. whisper.cpp統合（Phase 9）

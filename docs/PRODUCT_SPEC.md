@@ -641,13 +641,13 @@ Mock成功だけで実機成功としない。手動実機テストは `MANUAL_T
 
 ## 35. スクリプト
 
-- `doctor.ps1`: Windows x64 / Premiere 26.3.0 / UDT / Developer Mode / Node / npm / Git /
+- `doctor.ps1`: Windows x64 / Premiere 26.3.0 / UXP Developer Tool / Developer Mode / Node / npm / Git /
   CMake / VS2022 / MSVC / Windows SDK / Hybrid SDK / whisper.cpp / モデル確認
 - `bootstrap.ps1`: npm install / CMake準備 / フォルダ / Hybrid SDK確認 / whisper.cpp準備 / 初期設定
 - `build.ps1`: TS型チェック / ESLint / UXP Build / Worker Build / Addon Build /
   Unit・Integration Test / Manifest検証 / 配布フォルダ
-- `prepare-dist.ps1`: UDTで読み込めるPlugin Folder生成。独自ZIPでCCXを作らない。
-  最終CCXはUDTのPackage機能。
+- `prepare-dist.ps1`: UXP Developer Toolで読み込めるPlugin Folder生成。独自ZIPでCCXを作らない。
+  最終CCXはUXP Developer ToolのPackage機能。
 
 ## 36. ライセンス
 
@@ -689,4 +689,4 @@ APIキー / `eval` / 空catch / 巨大PCM一括展開 / モデルGit格納 / ユ
 実装済み / 未実装 / 実機検証済み / Mockのみ / ビルド結果 / テスト結果 / API Probe結果 /
 採用アーキテクチャ / 採用Timeline Strategy / MF検証 / Transcript JSON検証 /
 フィラーOFF検証 / Worker・Native Thread検証 / Known Issues / 手動作業 / Plugin Folder /
-UDT読み込み手順 / 次に実行するコマンド。問題を隠さず技術的理由を記載。
+UXP Developer Tool読み込み手順 / 次に実行するコマンド。問題を隠さず技術的理由を記載。

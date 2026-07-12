@@ -28,7 +28,7 @@ GitHubの緑の「Code」ボタン → 「Download ZIP」→ 好きな場所に�
 
 1. Premiere Pro 26.3 を起動
 2. UXP Developer Tool を起動（初回は「Developer Modeを有効にしますか?」→ はい）
-3. UDTの「Add Plugin」→ 展開したフォルダの **`plugin/manifest.json`** を選ぶ
+3. UXP Developer Toolの「Add Plugin」→ 展開したフォルダの **`plugin/manifest.json`** を選ぶ
 4. 一覧に出た「KazuCut Local」の「•••」→ **Load**
 5. Premiereに KazuCut Local パネルが表示される
 
@@ -45,7 +45,7 @@ GitHubの緑の「Code」ボタン → 「Download ZIP」→ 好きな場所に�
 
 | 症状 | 対処 |
 |---|---|
-| UDTに「Developer Mode」の警告 | Premiere側: 編集 → 環境設定 → 一般 →「開発モード」をON → Premiere再起動 |
+| UXP Developer Toolに「Developer Mode」の警告 | Premiere側: 編集 → 環境設定 → 一般 →「開発モード」をON → Premiere再起動 |
 | パネルに「Mockモード」バナー | Windows Defenderが `KazuCutWorker.exe` をブロックしていないか確認（Windowsセキュリティ → 保護の履歴） |
 | 「解析する」でエラー | パネルのエラーメッセージ全文をコピーして報告してください |
 

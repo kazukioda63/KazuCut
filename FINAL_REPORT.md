@@ -76,9 +76,9 @@ Windows専用部分はソース完成+未検証と明記する。**問題は隠�
 
 ## 残りの手動作業（ユーザー）
 
-1. **ビルド不要**: UDTで `plugin/manifest.json` を読み込むだけ（SDK_SETUP_REQUIRED.md 3ステップ手順）
+1. **ビルド不要**: UXP Developer Toolで `plugin/manifest.json` を読み込むだけ（SDK_SETUP_REQUIRED.md 3ステップ手順）
 2. （自分でビルドする場合のみ）`doctor.ps1` → `bootstrap.ps1` → `build.ps1`
-3. または UDTで `build\dist\KazuCutLocal` を読み込み
+3. または UXP Developer Toolで `build\dist\KazuCutLocal` を読み込み
 4. MANUAL_TEST_CHECKLIST.mdの実機テスト（特にAPI Probe → 結果を共有）
 5. 実素材3本以上+正解区間JSONの提供（tools/evaluate）
 
