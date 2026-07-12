@@ -1921,8 +1921,336 @@
     return parts.sort().join("|");
   }
 
+  // plugin/src/premiere/realAnalysis.ts
+  function toClipInfo2(c, id, offline) {
+    return {
+      clipId: id,
+      mediaType: c.kind,
+      trackIndex: c.trackIndex,
+      projectItemId: c.projectItemName,
+      startTicks: c.startTicks,
+      endTicks: c.endTicks,
+      inTicks: c.inTicks,
+      outTicks: c.outTicks,
+      speed: c.speed,
+      reversed: c.reversed,
+      timeRemapped: false,
+      mediaOffline: offline,
+      clipKind: "standard"
+    };
+  }
+  function retainedMsFor(durationMs, settings) {
+    const sil = settings.silence;
+    if (sil.mode === "remove") return 0;
+    if (sil.stagedRules && sil.stagedRules.length > 0) {
+      const sorted = [...sil.stagedRules].sort((a, b) => b.minDurationMs - a.minDurationMs);
+      for (const rule of sorted) {
+        if (durationMs >= rule.minDurationMs) return Math.min(rule.retainMs, durationMs);
+      }
+      return durationMs;
+    }
+    return Math.min(sil.retainMs, durationMs);
+  }
+  async function runRealAnalysis(ppro2, bridge2, settings, videoTrackIndex, audioTrackIndex, onProgress, signal) {
+    const project = await ppro2.Project.getActiveProject();
+    if (!project) return { ok: false, error: createError("NO_ACTIVE_PROJECT", "") };
+    const seq = await project.getActiveSequence();
+    if (!seq) return { ok: false, error: createError("NO_ACTIVE_SEQUENCE", "") };
+    const guid = String(seq.guid);
+    const vClips = await scanTrack(ppro2, project, guid, "video", videoTrackIndex);
+    if (vClips.length === 0) {
+      return {
+        ok: false,
+        error: createError("NO_SELECTED_CLIP", `V${videoTrackIndex + 1}\u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093`)
+      };
+    }
+    const vLive = vClips[0];
+    if (!vLive) return { ok: false, error: createError("NO_SELECTED_CLIP", "") };
+    let mediaPath = "";
+    let offline = false;
+    try {
+      const seqFresh = await freshSequence2(project, guid);
+      const track = await seqFresh.getVideoTrack(videoTrackIndex);
+      const items = track.getTrackItems(clipTrackItemType(ppro2), false);
+      const item = items[0];
+      if (!item) throw new Error("TrackItem\u518D\u53D6\u5F97\u5931\u6557");
+      const projectItem = await item.getProjectItem();
+      const clipItem = ppro2.ClipProjectItem.cast(projectItem);
+      mediaPath = await clipItem.getMediaFilePath();
+      offline = await clipItem.isOffline().catch(() => false);
+    } catch (e) {
+      return {
+        ok: false,
+        error: createError("MEDIA_NOT_FOUND", `\u30E1\u30C7\u30A3\u30A2\u30D1\u30B9\u53D6\u5F97\u5931\u6557: ${String(e)}`)
+      };
+    }
+    if (offline) return { ok: false, error: createError("MEDIA_OFFLINE", mediaPath) };
+    if (!mediaPath) return { ok: false, error: createError("MEDIA_NOT_FOUND", "\u30D1\u30B9\u304C\u7A7A\u3067\u3059") };
+    const video = toClipInfo2(vLive, "v0", offline);
+    const aClips = await scanTrack(ppro2, project, guid, "audio", audioTrackIndex);
+    const pair = resolveAvPair(
+      video,
+      aClips.map((c, i) => toClipInfo2(c, `a${i}`, false)),
+      audioTrackIndex
+    );
+    if (!pair.ok) return { ok: false, error: pair.error };
+    const request = buildJobRequest(
+      {
+        jobId: `analyze-${Date.now()}`,
+        mediaPath,
+        sourceInTicks: video.inTicks,
+        sourceOutTicks: video.outTicks,
+        audioStreamIndex: 0
+      },
+      settings,
+      null
+    );
+    const jobId = bridge2.startJob(JSON.stringify({ type: "analyze", ...request }));
+    if (jobId.startsWith("{")) {
+      try {
+        const err = JSON.parse(jobId);
+        return {
+          ok: false,
+          error: createError(err.error?.code ?? "WORKER_START_FAILED", err.error?.developerMessage ?? jobId)
+        };
+      } catch {
+        return { ok: false, error: createError("WORKER_START_FAILED", jobId) };
+      }
+    }
+    const status = await pollJob(bridge2, jobId, { intervalMs: 150, signal, onProgress });
+    if (status.state === "cancelled") {
+      bridge2.disposeJob(jobId);
+      return { ok: false, error: createError("CANCELLED", "") };
+    }
+    if (status.state !== "completed") {
+      bridge2.disposeJob(jobId);
+      return {
+        ok: false,
+        error: status.error ?? createError("WORKER_CRASHED", `state=${status.state}`)
+      };
+    }
+    let silence;
+    try {
+      const result = JSON.parse(bridge2.getJobResult(jobId));
+      if (!result.silence) throw new Error("silence\u30BB\u30AF\u30B7\u30E7\u30F3\u304C\u3042\u308A\u307E\u305B\u3093");
+      silence = result.silence;
+    } catch (e) {
+      bridge2.disposeJob(jobId);
+      return { ok: false, error: createError("WORKER_PROTOCOL_ERROR", String(e)) };
+    }
+    bridge2.disposeJob(jobId);
+    const rawCandidates = silence.intervals.map((iv, i) => {
+      const durationMs = iv.endMs - iv.startMs;
+      const retained = retainedMsFor(durationMs, settings);
+      const srcStart = addTicks(video.inTicks, msToTicks(iv.startMs));
+      const srcEnd = addTicks(video.inTicks, msToTicks(iv.endMs));
+      return {
+        id: `sil-${i}`,
+        reason: "silence",
+        clipId: "v0",
+        sourceStartTicks: srcStart,
+        sourceEndTicks: srcEnd,
+        sequenceStartTicks: addTicks(video.startTicks, msToTicks(iv.startMs)),
+        sequenceEndTicks: addTicks(video.startTicks, msToTicks(iv.endMs)),
+        originalDurationMs: durationMs,
+        retainedDurationMs: retained,
+        removalDurationMs: Math.max(durationMs - retained, 0),
+        selected: durationMs - retained > 0,
+        warnings: [],
+        metadata: { noiseFloorDb: silence.noiseFloorDb }
+      };
+    });
+    const candidates2 = mergeCandidates(rawCandidates, {
+      mergeGapMs: settings.silence.mergeGapMs,
+      minSpeechMs: settings.silence.minSpeechMs
+    }).filter((c) => c.removalDurationMs > 0);
+    return {
+      ok: true,
+      candidates: candidates2,
+      context: {
+        sequenceGuid: guid,
+        videoTrackIndex,
+        audioTrackIndex,
+        videoStartTicks: video.startTicks,
+        videoInTicks: video.inTicks,
+        videoOutTicks: video.outTicks,
+        audioStartTicks: pair.audio.startTicks,
+        mediaPath,
+        noiseFloorDb: silence.noiseFloorDb,
+        thresholdDb: silence.thresholdDb
+      }
+    };
+  }
+  async function applyRealEdits(ppro2, context, candidates2, outputMode, onLog) {
+    const results = [];
+    const push = (apiName, succeeded, notes, error) => {
+      const r = { apiName, available: succeeded, succeeded, notes };
+      if (error !== void 0) r.error = error;
+      results.push(r);
+      onLog(`${succeeded ? "\u2713" : "\u2717"} ${apiName}`);
+    };
+    const project = await ppro2.Project.getActiveProject();
+    if (!project) {
+      push("\u524D\u63D0", false, [], "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
+      return { ok: false, results };
+    }
+    const originalGuid = context.sequenceGuid;
+    const originalFingerprint = await sequenceFingerprint2(ppro2, project, originalGuid);
+    let targetGuid;
+    let backupGuid;
+    if (outputMode === "duplicate") {
+      try {
+        const clone = await cloneSequenceAndIdentify(project, originalGuid);
+        targetGuid = clone.guid;
+        push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", true, [clone.name]);
+      } catch (e) {
+        push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", false, [], String(e));
+        return { ok: false, results };
+      }
+    } else {
+      try {
+        const backup = await cloneSequenceAndIdentify(project, originalGuid);
+        backupGuid = backup.guid;
+        push("\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u4F5C\u6210", true, [backup.name]);
+      } catch (e) {
+        push("\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u4F5C\u6210", false, ["\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u306B\u5931\u6557\u3057\u305F\u305F\u3081\u76F4\u63A5\u7DE8\u96C6\u3092\u958B\u59CB\u3057\u307E\u305B\u3093\uFF08\u4ED5\u69D817\u7AE0\uFF09"], String(e));
+        return { ok: false, results };
+      }
+      targetGuid = originalGuid;
+    }
+    try {
+      const vClips = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
+      const aClips = await scanTrack(ppro2, project, targetGuid, "audio", context.audioTrackIndex);
+      const v = vClips.find(
+        (c) => c.inTicks === context.videoInTicks && c.outTicks === context.videoOutTicks
+      );
+      const a = aClips.find((c) => c.startTicks === v?.startTicks);
+      if (!v || !a) {
+        push("\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u518D\u89E3\u6C7A", false, [
+          "\u7DE8\u96C6\u5148\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u3092\u7279\u5B9A\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F"
+        ]);
+        return { ok: false, results };
+      }
+      const selected = candidates2.filter((c) => c.selected);
+      const segments = planKeepSegments(
+        {
+          clipId: "v0",
+          sourceInTicks: v.inTicks,
+          sourceOutTicks: v.outTicks,
+          sequenceStartTicks: v.startTicks
+        },
+        selected
+      );
+      const removedMs = selected.reduce((s, c) => s + c.removalDurationMs, 0);
+      push("Keep Segment\u751F\u6210", segments.length > 0, [
+        `\u5019\u88DC${selected.length}\u4EF6 \u2192 Segment${segments.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(removedMs / 1e3).toFixed(1)}\u79D2`
+      ]);
+      if (segments.length === 0) return { ok: false, results };
+      const nonTargetBefore = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
+      const rebuildSegments = segments.map((s) => ({
+        sourceInTicks: s.sourceInTicks,
+        sourceOutTicks: s.sourceOutTicks,
+        destinationStartTicks: s.destinationStartTicks
+      }));
+      try {
+        await rebuildTrackSegments(
+          ppro2,
+          project,
+          targetGuid,
+          "video",
+          context.videoTrackIndex,
+          v.startTicks,
+          rebuildSegments,
+          onLog
+        );
+        await rebuildTrackSegments(
+          ppro2,
+          project,
+          targetGuid,
+          "audio",
+          context.audioTrackIndex,
+          a.startTicks,
+          rebuildSegments,
+          onLog
+        );
+        push("V/A\u518D\u69CB\u7BC9", true, []);
+      } catch (e) {
+        push("V/A\u518D\u69CB\u7BC9", false, [], String(e));
+        return { ok: false, results };
+      }
+      const vAfter = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
+      const aAfter = await scanTrack(ppro2, project, targetGuid, "audio", context.audioTrackIndex);
+      let ok = vAfter.length === segments.length && aAfter.length === segments.length;
+      const notes = [`\u30AF\u30EA\u30C3\u30D7\u6570 V=${vAfter.length} A=${aAfter.length}\uFF08\u671F\u5F85${segments.length}\uFF09`];
+      for (const seg of segments) {
+        const sv = vAfter.find((c) => c.startTicks === seg.destinationStartTicks);
+        const sa = aAfter.find((c) => c.startTicks === seg.destinationStartTicks);
+        if (!sv || !sa || sv.inTicks !== seg.sourceInTicks || sv.outTicks !== seg.sourceOutTicks) {
+          ok = false;
+          notes.push(`dest=${seg.destinationStartTicks}: \u914D\u7F6E/In/Out\u4E0D\u4E00\u81F4`);
+          break;
+        }
+        if (subtractTicks(sa.startTicks, sv.startTicks) !== "0") {
+          ok = false;
+          notes.push(`dest=${seg.destinationStartTicks}: A/V\u540C\u671F\u305A\u308C`);
+          break;
+        }
+      }
+      push("\u914D\u7F6E+A/V\u540C\u671F\u691C\u8A3C", ok, notes);
+      const nonTargetAfter = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
+      push("\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u4E0D\u5909\u691C\u8A3C", nonTargetBefore === nonTargetAfter, []);
+      if (nonTargetBefore !== nonTargetAfter) ok = false;
+      if (outputMode === "duplicate") {
+        const after = await sequenceFingerprint2(ppro2, project, originalGuid);
+        push("\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", after === originalFingerprint, []);
+        if (after !== originalFingerprint) ok = false;
+      }
+      let bgmMessage;
+      {
+        const arollEnd = vAfter.reduce(
+          (max, c) => compareTicks(c.endTicks, max) > 0 ? c.endTicks : max,
+          "0"
+        );
+        let otherAudioEnd = "0";
+        const aCount = await trackCount(project, targetGuid, "audio");
+        for (let i = 0; i < aCount; i++) {
+          if (i === context.audioTrackIndex) continue;
+          for (const c of await scanTrack(ppro2, project, targetGuid, "audio", i)) {
+            if (compareTicks(c.endTicks, otherAudioEnd) > 0) otherAudioEnd = c.endTicks;
+          }
+        }
+        if (compareTicks(otherAudioEnd, arollEnd) > 0) {
+          const overhangSec = ticksToApproxMs(subtractTicks(otherAudioEnd, arollEnd)) / 1e3;
+          bgmMessage = `BGM\u304CA\u30ED\u30FC\u30EB\u3088\u308A${overhangSec.toFixed(1)}\u79D2\u9577\u304F\u6B8B\u3063\u3066\u3044\u307E\u3059\u3002
+\u5FC5\u8981\u306B\u5FDC\u3058\u3066Premiere\u4E0A\u3067\u77ED\u304F\u3057\u3066\u304F\u3060\u3055\u3044\u3002`;
+        }
+      }
+      const summary = { ok, results, editedSequenceGuid: targetGuid };
+      if (backupGuid !== void 0) summary.backupSequenceGuid = backupGuid;
+      if (bgmMessage !== void 0) summary.bgmOverhangMessage = bgmMessage;
+      return summary;
+    } catch (e) {
+      push("\u9069\u7528\u51E6\u7406", false, [], String(e));
+      return { ok: false, results };
+    }
+  }
+  async function nonTargetFingerprint2(ppro2, project, guid, context) {
+    const parts = [];
+    for (const kind of ["video", "audio"]) {
+      const count = await trackCount(project, guid, kind);
+      for (let i = 0; i < count; i++) {
+        if (kind === "video" && i === context.videoTrackIndex) continue;
+        if (kind === "audio" && i === context.audioTrackIndex) continue;
+        for (const c of await scanTrack(ppro2, project, guid, kind, i)) {
+          parts.push(`${kind}${i}:${c.projectItemName}:${c.startTicks}-${c.endTicks}:${c.inTicks}/${c.outTicks}`);
+        }
+      }
+    }
+    return parts.sort().join("|");
+  }
+
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1219" : "dev";
+  var BUILD_ID = true ? "20260712T1238" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -1958,6 +2286,7 @@
   }
   var ppro = tryLoadPremiere();
   var state = defaultState();
+  var analysisContext = null;
   var candidates = [];
   var running = false;
   var abortController = null;
@@ -2089,6 +2418,48 @@
     setControlsEnabled(false);
     $.progressArea().style.display = "block";
     abortController = new AbortController();
+    const updateProgress = (progress, stage) => {
+      el("progressPercent").textContent = `${Math.round(progress * 100)}%`;
+      el("progressFill").style.width = `${progress * 100}%`;
+      el("progressStage").textContent = stage === "silence" ? "\u73FE\u5728\uFF1A\u7121\u97F3\u533A\u9593\u3092\u691C\u51FA\u3057\u3066\u3044\u307E\u3059" : "\u73FE\u5728\uFF1A\u97F3\u58F0\u3092\u8AAD\u307F\u8FBC\u3093\u3067\u3044\u307E\u3059";
+    };
+    if (ppro && !bridgeIsMock) {
+      try {
+        const vIdx = Number(el("videoTrackSelect").value || "0");
+        const aIdx = Number(el("audioTrackSelect").value || "0");
+        const result = await runRealAnalysis(
+          ppro,
+          bridge,
+          state.currentSettings,
+          vIdx,
+          aIdx,
+          (st) => updateProgress(st.progress, st.stage),
+          abortController.signal
+        );
+        if (result.ok) {
+          analysisContext = result.context;
+          renderCandidates(result.candidates);
+          const totalMs = result.candidates.filter((c) => c.selected).reduce((s, c) => s + c.removalDurationMs, 0);
+          showBanner(
+            `\u89E3\u6790\u5B8C\u4E86: \u7121\u97F3\u5019\u88DC ${result.candidates.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(totalMs / 1e3).toFixed(1)}\u79D2
+\u30CE\u30A4\u30BA\u30D5\u30ED\u30A2 ${result.context.noiseFloorDb.toFixed(1)}dB / \u3057\u304D\u3044\u5024 ${result.context.thresholdDb.toFixed(1)}dB
+\u5019\u88DC\u3092\u78BA\u8A8D\u3057\u3066\u300C\u9078\u629E\u3057\u305F\u5019\u88DC\u3092\u9069\u7528\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+          );
+        } else {
+          analysisContext = null;
+          showBanner(
+            result.error.code === "CANCELLED" ? "\u51E6\u7406\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002" : `${result.error.userMessage}
+\uFF08\u8A73\u7D30: ${result.error.developerMessage}\uFF09`
+          );
+        }
+      } finally {
+        running = false;
+        currentJobId = null;
+        setControlsEnabled(true);
+        $.progressArea().style.display = "none";
+      }
+      return;
+    }
     try {
       const request = {
         type: "test",
@@ -2187,10 +2558,8 @@
     }
     updateSummary();
     $.applyArea().style.display = candidates.length > 0 ? "block" : "none";
-    $.applyButton().disabled = ppro === null || bridgeIsMock;
-    if (ppro === null) {
-      el("applySummary").textContent = "Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u9069\u7528\u3067\u304D\u307E\u305B\u3093\uFF08\u5019\u88DC\u78BA\u8A8D\u306E\u30C7\u30E2\u8868\u793A\uFF09\u3002";
-    }
+    $.applyButton().disabled = analysisContext === null;
+    el("applySummary").textContent = analysisContext === null ? "Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u9069\u7528\u3067\u304D\u307E\u305B\u3093\uFF08\u5019\u88DC\u78BA\u8A8D\u306E\u30C7\u30E2\u8868\u793A\uFF09\u3002" : `\u5BFE\u8C61: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} \u30FB \u51FA\u529B: ${el("outputMode").value === "direct" ? "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u76F4\u63A5\u7DE8\u96C6\uFF08\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3042\u308A\uFF09" : "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u7DE8\u96C6"} \u30FB \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF: \u5909\u66F4\u3057\u307E\u305B\u3093`;
   }
   function approxStartMs(c) {
     const perMs = Number(msToTicks(1));
@@ -2324,6 +2693,64 @@
       setControlsEnabled(true);
     }
   }
+  async function applySelected() {
+    if (running) return;
+    if (!ppro || analysisContext === null) {
+      showBanner("\u5148\u306B\u300C\u89E3\u6790\u3059\u308B\u300D\u3092\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+      return;
+    }
+    const selected = candidates.filter((c) => c.selected);
+    if (selected.length === 0) {
+      showBanner("\u9078\u629E\u3055\u308C\u305F\u5019\u88DC\u304C\u3042\u308A\u307E\u305B\u3093\u3002");
+      return;
+    }
+    running = true;
+    setControlsEnabled(false);
+    uiToSettings();
+    const outputMode = state.outputMode;
+    const logs = [];
+    const renderLogs = () => {
+      showBanner(`\u9069\u7528\u4E2D\uFF08${selected.length}\u4EF6\uFF09...
+` + logs.slice(-8).join("\n"));
+    };
+    renderLogs();
+    try {
+      const summary = await applyRealEdits(
+        ppro,
+        analysisContext,
+        candidates,
+        outputMode,
+        (m) => {
+          logs.push(m);
+          renderLogs();
+        }
+      );
+      try {
+        await saveDiagnostics("apply-result.json", JSON.stringify(summary.results, null, 2));
+      } catch {
+        logs.push("\uFF08\u8A3A\u65AD\u7D50\u679C\u306E\u4FDD\u5B58\u306B\u5931\u6557\uFF09");
+      }
+      if (summary.ok) {
+        showBanner(
+          "\u2705 \u9069\u7528\u5B8C\u4E86\u3002\u3059\u3079\u3066\u306E\u691C\u8A3C\uFF08\u914D\u7F6E\u30FBA/V\u540C\u671F\u30FB\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u30FB\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\uFF09\u3092\u901A\u904E\u3057\u307E\u3057\u305F\u3002\n" + (outputMode === "duplicate" ? "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u7D50\u679C\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n" : "\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3092\u4FDD\u6301\u3057\u3066\u3044\u307E\u3059\u3002\n") + (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
+        );
+        analysisContext = null;
+        renderCandidates([]);
+        $.summaryLine().textContent = "";
+      } else {
+        const failed = summary.results.filter((r) => !r.succeeded).map((r) => r.apiName);
+        showBanner(
+          `\u26A0\uFE0F \u9069\u7528\u304C\u5B8C\u4E86\u3057\u307E\u305B\u3093\u3067\u3057\u305F\uFF08\u5931\u6557: ${failed.join(", ")}\uFF09\u3002
+apply-result.json\u3092\u5171\u6709\u3057\u3066\u304F\u3060\u3055\u3044\u3002\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306E\u4FDD\u8B77\u72B6\u614B\u3082\u8A18\u9332\u3055\u308C\u3066\u3044\u307E\u3059\u3002`
+        );
+      }
+    } catch (e) {
+      showBanner(`\u9069\u7528\u3067\u30A8\u30E9\u30FC: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      running = false;
+      setControlsEnabled(true);
+    }
+  }
   async function runMutatingProbeUi() {
     if (!ppro) {
       showBanner("Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u5909\u66F4\u7CFBProbe\u3092\u5B9F\u884C\u3067\u304D\u307E\u305B\u3093\u3002");
@@ -2408,7 +2835,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
       void runPhase3Ui();
     });
     on("applyButton", () => {
-      showBanner("\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u9069\u7528\u306FAPI Probe\uFF08Phase 2\u5B9F\u6A5F\u691C\u8A3C\uFF09\u5B8C\u4E86\u5F8C\u306B\u6709\u52B9\u5316\u3055\u308C\u307E\u3059\u3002");
+      void applySelected();
     });
     on("savePresetButton", () => {
       uiToSettings();

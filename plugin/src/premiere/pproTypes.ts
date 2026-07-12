@@ -111,6 +111,12 @@ export interface PproModule {
   SequenceEditor: {
     getEditor(seq: PproSequence): PproSequenceEditor;
   };
+  ClipProjectItem: {
+    cast(item: PproProjectItem): {
+      getMediaFilePath(): Promise<string>;
+      isOffline(): Promise<boolean>;
+    };
+  };
   TrackItemSelection?: {
     createEmptySelection?(selection: unknown): void;
   };

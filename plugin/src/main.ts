@@ -16,6 +16,7 @@ import { defaultState, type StoredState } from "./state/settingsStore";
 import { runApiProbe } from "./premiere/apiProbe";
 import { runMutatingProbe } from "./premiere/mutatingProbe";
 import { runPhase3Demo } from "./premiere/phase3Demo";
+import { applyRealEdits, runRealAnalysis, type AnalysisContext } from "./premiere/realAnalysis";
 import type { PproModule } from "./premiere/pproTypes";
 import { msToTicks } from "./ticks";
 import type { AnalysisSettings, CutCandidate, NativeBridge, Preset } from "./types";
@@ -66,6 +67,7 @@ const ppro = tryLoadPremiere();
 
 // ---- 状態 ----
 const state: StoredState = defaultState();
+let analysisContext: AnalysisContext | null = null;
 let candidates: CutCandidate[] = [];
 let running = false;
 let abortController: AbortController | null = null;
@@ -177,11 +179,58 @@ async function analyze(): Promise<void> {
   $.progressArea().style.display = "block";
   abortController = new AbortController();
 
+  const updateProgress = (progress: number, stage?: string): void => {
+    el<HTMLSpanElement>("progressPercent").textContent = `${Math.round(progress * 100)}%`;
+    el<HTMLDivElement>("progressFill").style.width = `${progress * 100}%`;
+    el<HTMLDivElement>("progressStage").textContent =
+      stage === "silence" ? "現在：無音区間を検出しています" : "現在：音声を読み込んでいます";
+  };
+
+  // ---- 本番経路: Premiere接続 + ネイティブWorkerで実メディアの無音解析 ----
+  if (ppro && !bridgeIsMock) {
+    try {
+      const vIdx = Number(el<HTMLSelectElement>("videoTrackSelect").value || "0");
+      const aIdx = Number(el<HTMLSelectElement>("audioTrackSelect").value || "0");
+      const result = await runRealAnalysis(
+        ppro as unknown as PproModule,
+        bridge,
+        state.currentSettings,
+        vIdx,
+        aIdx,
+        (st) => updateProgress(st.progress, st.stage),
+        abortController.signal
+      );
+      if (result.ok) {
+        analysisContext = result.context;
+        renderCandidates(result.candidates);
+        const totalMs = result.candidates
+          .filter((c) => c.selected)
+          .reduce((s, c) => s + c.removalDurationMs, 0);
+        showBanner(
+          `解析完了: 無音候補 ${result.candidates.length}件 / 推定短縮 ${(totalMs / 1000).toFixed(1)}秒\n` +
+          `ノイズフロア ${result.context.noiseFloorDb.toFixed(1)}dB / しきい値 ${result.context.thresholdDb.toFixed(1)}dB\n` +
+          "候補を確認して「選択した候補を適用」を押してください。"
+        );
+      } else {
+        analysisContext = null;
+        showBanner(
+          result.error.code === "CANCELLED"
+            ? "処理をキャンセルしました。"
+            : `${result.error.userMessage}\n（詳細: ${result.error.developerMessage}）`
+        );
+      }
+    } finally {
+      running = false;
+      currentJobId = null;
+      setControlsEnabled(true);
+      $.progressArea().style.display = "none";
+    }
+    return;
+  }
+
   try {
-    // 現段階: Workerの起動・進捗・キャンセルを実証するテストジョブを実行する
-    // （実メディアの無音解析への配線はPhase 4-5の統合で有効化。buildJobRequestは
-    //   その際にこの箇所で使用する: analysisController.ts）
-    void buildJobRequest; // 未使用警告の抑止（統合予定のため残置）
+    // Mock/Premiere未接続時: Worker/ブリッジ接続テストジョブ
+    void buildJobRequest;
     const request = {
       type: "test",
       jobId: `test-${Date.now()}`,
@@ -295,12 +344,14 @@ function renderCandidates(list: CutCandidate[]): void {
   }
   updateSummary();
   $.applyArea().style.display = candidates.length > 0 ? "block" : "none";
-  // Premiere未接続では適用不可
-  $.applyButton().disabled = ppro === null || bridgeIsMock;
-  if (ppro === null) {
-    el<HTMLDivElement>("applySummary").textContent =
-      "Premiere未接続のため適用できません（候補確認のデモ表示）。";
-  }
+  // 実解析済み（context保持）の場合のみ適用可能
+  $.applyButton().disabled = analysisContext === null;
+  el<HTMLDivElement>("applySummary").textContent =
+    analysisContext === null
+      ? "Premiere未接続のため適用できません（候補確認のデモ表示）。"
+      : `対象: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} ・ ` +
+        `出力: ${el<HTMLSelectElement>("outputMode").value === "direct" ? "元シーケンスを直接編集（バックアップ複製あり）" : "複製シーケンスで編集"} ・ ` +
+        "対象外トラック: 変更しません";
 }
 
 function approxStartMs(c: CutCandidate): number {
@@ -446,6 +497,70 @@ async function runPhase3Ui(): Promise<void> {
   }
 }
 
+/** 選択候補をタイムラインへ適用する（Phase 7・Phase 3実証済みエンジン使用） */
+async function applySelected(): Promise<void> {
+  if (running) return; // 連打防止（仕様32章）
+  if (!ppro || analysisContext === null) {
+    showBanner("先に「解析する」を実行してください。");
+    return;
+  }
+  const selected = candidates.filter((c) => c.selected);
+  if (selected.length === 0) {
+    showBanner("選択された候補がありません。");
+    return;
+  }
+  running = true;
+  setControlsEnabled(false);
+  uiToSettings();
+  const outputMode = state.outputMode;
+  const logs: string[] = [];
+  const renderLogs = (): void => {
+    showBanner(`適用中（${selected.length}件）...\n` + logs.slice(-8).join("\n"));
+  };
+  renderLogs();
+  try {
+    const summary = await applyRealEdits(
+      ppro as unknown as PproModule,
+      analysisContext,
+      candidates,
+      outputMode,
+      (m) => {
+        logs.push(m);
+        renderLogs();
+      }
+    );
+    try {
+      await saveDiagnostics("apply-result.json", JSON.stringify(summary.results, null, 2));
+    } catch {
+      logs.push("（診断結果の保存に失敗）");
+    }
+    if (summary.ok) {
+      showBanner(
+        "✅ 適用完了。すべての検証（配置・A/V同期・対象外トラック・元シーケンス）を通過しました。\n" +
+        (outputMode === "duplicate"
+          ? "複製シーケンスを開いて結果を確認してください。\n"
+          : "バックアップ複製を保持しています。\n") +
+        (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
+      );
+      // 適用済み候補をクリア
+      analysisContext = null;
+      renderCandidates([]);
+      $.summaryLine().textContent = "";
+    } else {
+      const failed = summary.results.filter((r) => !r.succeeded).map((r) => r.apiName);
+      showBanner(
+        `⚠️ 適用が完了しませんでした（失敗: ${failed.join(", ")}）。\n` +
+        "apply-result.jsonを共有してください。元シーケンスの保護状態も記録されています。"
+      );
+    }
+  } catch (e) {
+    showBanner(`適用でエラー: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    running = false;
+    setControlsEnabled(true);
+  }
+}
+
 async function runMutatingProbeUi(): Promise<void> {
   if (!ppro) {
     showBanner("Premiere未接続のため変更系Probeを実行できません。");
@@ -542,7 +657,7 @@ function init(): void {
     void runPhase3Ui();
   });
   on("applyButton", () => {
-    showBanner("タイムライン適用はAPI Probe（Phase 2実機検証）完了後に有効化されます。");
+    void applySelected();
   });
   on("savePresetButton", () => {
     uiToSettings();
