@@ -1,7 +1,8 @@
 # Progress
 
 ## Current phase
-**Phase 3完了（実機実証済み）** → 次: Phase 4-7統合（実メディアの無音解析→候補UI→適用）
+**Phase 4-7統合が実機で動作**（実素材34候補の解析成功・適用成功）。
+D-020により直接編集方式へ改定済み。設定永続化・候補ジャンプ・一括選択まで実装
 
 ## Completed
 - Phase 0: 仕様固定（PRODUCT_SPEC）/ ADR-001〜006 / REFERENCES / ビルド基盤（npm+CMake+PS1）
@@ -31,10 +32,11 @@
 - 実素材評価（素材提供待ち）
 
 ## Next
-1. ユーザー: SDK_SETUP_REQUIRED.mdの3ステップ（UXP Developer Tool導入→ZIP展開→plugin/読込。ビルド不要）
-2. 実機: MANUAL_TEST_CHECKLIST Phase 1検証 → ADR-001確定
-3. 実機: API Probe実行 → 結果を基にuxpPremiereAdapter実装 → 500ms削除実証
-4. whisper.cpp統合（Phase 9）
+1. 実機: 直接編集+マーカーの動作確認（build 20260712T1326）・キャンセル動作（チェックリスト3）
+2. 「Aロールトラック全体」（複数クリップ）対応 ※ユーザーの編集スタイル確認待ち
+3. プリセット実感チューニング（ユーザーの視聴フィードバック待ち）
+4. フィラー削除: Premiere Transcript経由を先行実装 → whisper.cpp統合（Phase 8-9）
+5. キャッシュ（Phase 10）/ CCXパッケージ化（Phase 11）
 
 ## Verification status
 - Build: TS(typecheck/lint/esbuild) 成功 / Worker(Linux g++ + mingw-w64 Win x64) 成功 /
