@@ -48,3 +48,8 @@
 - **D-016**: bolt-uxp module.cppがAddon内からCreateProcess+パイプの子プロセス起動を
   製品機能として同梱している事実を確認 → ADR-001外部Worker方式の公開前例として
   REFERENCES.mdへ記録（実機ゲートは維持）。
+- **D-017**（2026-07-12 実機Probe確定）: TrackItem CloneでリンクAudioは複製されない
+  → 再構築はV/A各トラックを独立にClone（二重Clone防止不要）。Moveは相対オフセット
+  （移動量=目的地−現在地で計算）。SetInPointは末尾固定の先頭トリム（start可変）
+  → Clone→SetIn/Out→Moveで位置補正の順序を採用。DOM参照は毎回取り直し必須、
+  Action生成はlockedAccess内。→ docs/api-probe.md

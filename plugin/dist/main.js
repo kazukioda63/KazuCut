@@ -1200,28 +1200,66 @@
               push("trackItem.createSetInPointAction", false, [], String(e));
             }
             try {
-              const seqNow = await freshSequence(project, guid);
-              const scanNow = await scanAll(ppro2, project, guid);
-              const vTrack = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
-              let removeTarget;
-              for (const item of vTrack?.items ?? []) {
-                const s = (await item.getStartTime()).ticks;
-                if (vBefore && s !== vBefore.start) removeTarget = item;
+              const constants = ppro2.Constants;
+              const mediaTypeObj = constants?.MediaType;
+              push("Constants.MediaType \u306E\u5185\u5BB9", !!mediaTypeObj, [
+                `Constants\u30AD\u30FC: ${constants ? Object.keys(constants).join(", ") : "\u306A\u3057"}`,
+                `MediaType: ${mediaTypeObj ? JSON.stringify(Object.keys(mediaTypeObj).map((k) => `${k}=${String(mediaTypeObj[k])}`)) : "\u306A\u3057"}`
+              ]);
+              const variants = [
+                { label: "(selection, false)", mediaType: null, argCount: 2 },
+                { label: "(selection, false, MediaType.VIDEO, false)", mediaType: mediaTypeObj?.["VIDEO"], argCount: 4 },
+                { label: "(selection, false, MediaType.ANY, false)", mediaType: mediaTypeObj?.["ANY"], argCount: 4 },
+                { label: "(selection, false, MediaType.Video, false)", mediaType: mediaTypeObj?.["Video"], argCount: 4 }
+              ];
+              let succeededVariant = null;
+              const attempts = [];
+              for (const variant of variants) {
+                if (variant.argCount === 4 && variant.mediaType === void 0) {
+                  attempts.push(`${variant.label}: \u30B9\u30AD\u30C3\u30D7\uFF08MediaType\u5B9A\u6570\u306A\u3057\uFF09`);
+                  continue;
+                }
+                try {
+                  const seqNow = await freshSequence(project, guid);
+                  const scanNow = await scanAll(ppro2, project, guid);
+                  const vTrack = scanNow.find(
+                    (s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex
+                  );
+                  let removeTarget;
+                  for (const item of vTrack?.items ?? []) {
+                    const s = (await item.getStartTime()).ticks;
+                    if (vBefore && s !== vBefore.start) removeTarget = item;
+                  }
+                  if (!removeTarget) {
+                    attempts.push(`${variant.label}: \u5BFE\u8C61\u306A\u3057\uFF08\u65E2\u306B\u524A\u9664\u6E08\u307F?\uFF09`);
+                    break;
+                  }
+                  const target = removeTarget;
+                  const selection = await seqNow.getSelection();
+                  const existing = await selection.getTrackItems();
+                  for (const it of existing) selection.removeItem(it);
+                  selection.addItem(target, true);
+                  const editor = ppro2.SequenceEditor.getEditor(seqNow);
+                  runTransaction(project, "KazuCut Probe: Remove", () => [
+                    variant.argCount === 2 ? editor.createRemoveItemsAction(selection, false) : editor.createRemoveItemsAction(selection, false, variant.mediaType, false)
+                  ]);
+                  const afterScan = await scanAll(ppro2, project, guid);
+                  const vCountNow = countKind(afterScan, "video");
+                  if (vCountNow === videoCountBefore) {
+                    succeededVariant = variant.label;
+                    attempts.push(`${variant.label}: \u2705 \u6210\u529F\uFF08Video\u4EF6\u6570=${vCountNow}\uFF09`);
+                    break;
+                  }
+                  attempts.push(`${variant.label}: \u5B9F\u884C\u306F\u3067\u304D\u305F\u304C\u4EF6\u6570\u304C${vCountNow}\uFF08\u671F\u5F85${videoCountBefore}\uFF09`);
+                } catch (e) {
+                  attempts.push(`${variant.label}: ${String(e)}`);
+                }
               }
-              if (!removeTarget) throw new Error("Remove\u5BFE\u8C61\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
-              const selection = await seqNow.getSelection();
-              const existing = await selection.getTrackItems();
-              for (const it of existing) selection.removeItem(it);
-              selection.addItem(removeTarget, true);
-              const editor = ppro2.SequenceEditor.getEditor(seqNow);
-              runTransaction(project, "KazuCut Probe: Remove", () => [
-                editor.createRemoveItemsAction(selection, false, void 0, false)
-              ]);
-              const afterScan = await scanAll(ppro2, project, guid);
-              const vCountFinal = countKind(afterScan, "video");
-              push("SequenceEditor.createRemoveItemsAction(ripple=false)", vCountFinal === videoCountBefore, [
-                `\u524A\u9664\u5F8CVideo\u4EF6\u6570=${vCountFinal}\uFF08\u671F\u5F85${videoCountBefore}\uFF09`
-              ]);
+              push(
+                "SequenceEditor.createRemoveItemsAction(ripple=false)",
+                succeededVariant !== null,
+                [...attempts, succeededVariant ? `\u63A1\u7528\u5F62: ${succeededVariant}` : "\u5168\u30D0\u30EA\u30A8\u30FC\u30B7\u30E7\u30F3\u5931\u6557"]
+              );
             } catch (e) {
               push("SequenceEditor.createRemoveItemsAction", false, [], String(e));
             }

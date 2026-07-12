@@ -303,31 +303,75 @@ export async function runMutatingProbe(ppro: PproModule): Promise<ProbeResult[]>
             push("trackItem.createSetInPointAction", false, [], String(e));
           }
 
-          // --- 5. createRemoveItemsAction(ripple=false) ---
+          // --- 5. createRemoveItemsAction(ripple=false) 引数バリエーション探索 ---
+          // 初回実機実行でmediaType=undefinedが "Illegal Parameter type" となったため、
+          // 成功する引数形を自動探索して記録する
           try {
-            const seqNow = await freshSequence(project, guid);
-            const scanNow = await scanAll(ppro, project, guid);
-            const vTrack = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
-            // 複製したクリップ（元と違うstart）を選択して削除
-            let removeTarget: PproTrackItem | undefined;
-            for (const item of vTrack?.items ?? []) {
-              const s = (await item.getStartTime()).ticks;
-              if (vBefore && s !== vBefore.start) removeTarget = item;
+            const constants = (ppro as unknown as { Constants?: Record<string, unknown> }).Constants;
+            const mediaTypeObj = constants?.MediaType as Record<string, unknown> | undefined;
+            push("Constants.MediaType の内容", !!mediaTypeObj, [
+              `Constantsキー: ${constants ? Object.keys(constants).join(", ") : "なし"}`,
+              `MediaType: ${mediaTypeObj ? JSON.stringify(Object.keys(mediaTypeObj).map((k) => `${k}=${String(mediaTypeObj[k])}`)) : "なし"}`
+            ]);
+
+            const variants: { label: string; mediaType: unknown; argCount: 2 | 4 }[] = [
+              { label: "(selection, false)", mediaType: null, argCount: 2 },
+              { label: "(selection, false, MediaType.VIDEO, false)", mediaType: mediaTypeObj?.["VIDEO"], argCount: 4 },
+              { label: "(selection, false, MediaType.ANY, false)", mediaType: mediaTypeObj?.["ANY"], argCount: 4 },
+              { label: "(selection, false, MediaType.Video, false)", mediaType: mediaTypeObj?.["Video"], argCount: 4 }
+            ];
+
+            let succeededVariant: string | null = null;
+            const attempts: string[] = [];
+            for (const variant of variants) {
+              if (variant.argCount === 4 && variant.mediaType === undefined) {
+                attempts.push(`${variant.label}: スキップ（MediaType定数なし）`);
+                continue;
+              }
+              try {
+                const seqNow = await freshSequence(project, guid);
+                const scanNow = await scanAll(ppro, project, guid);
+                const vTrack = scanNow.find(
+                  (s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex
+                );
+                let removeTarget: PproTrackItem | undefined;
+                for (const item of vTrack?.items ?? []) {
+                  const s = (await item.getStartTime()).ticks;
+                  if (vBefore && s !== vBefore.start) removeTarget = item;
+                }
+                if (!removeTarget) {
+                  attempts.push(`${variant.label}: 対象なし（既に削除済み?）`);
+                  break;
+                }
+                const target = removeTarget;
+                const selection = await seqNow.getSelection();
+                const existing = await selection.getTrackItems();
+                for (const it of existing) selection.removeItem(it);
+                selection.addItem(target, true);
+                const editor = ppro.SequenceEditor.getEditor(seqNow);
+                runTransaction(project, "KazuCut Probe: Remove", () => [
+                  variant.argCount === 2
+                    ? (editor.createRemoveItemsAction as unknown as (
+                        s: unknown, r: boolean) => unknown)(selection, false)
+                    : editor.createRemoveItemsAction(selection, false, variant.mediaType, false)
+                ]);
+                const afterScan = await scanAll(ppro, project, guid);
+                const vCountNow = countKind(afterScan, "video");
+                if (vCountNow === videoCountBefore) {
+                  succeededVariant = variant.label;
+                  attempts.push(`${variant.label}: ✅ 成功（Video件数=${vCountNow}）`);
+                  break;
+                }
+                attempts.push(`${variant.label}: 実行はできたが件数が${vCountNow}（期待${videoCountBefore}）`);
+              } catch (e) {
+                attempts.push(`${variant.label}: ${String(e)}`);
+              }
             }
-            if (!removeTarget) throw new Error("Remove対象を再取得できません");
-            const selection = await seqNow.getSelection();
-            const existing = await selection.getTrackItems();
-            for (const it of existing) selection.removeItem(it);
-            selection.addItem(removeTarget, true);
-            const editor = ppro.SequenceEditor.getEditor(seqNow);
-            runTransaction(project, "KazuCut Probe: Remove", () => [
-              editor.createRemoveItemsAction(selection, false, undefined, false)
-            ]);
-            const afterScan = await scanAll(ppro, project, guid);
-            const vCountFinal = countKind(afterScan, "video");
-            push("SequenceEditor.createRemoveItemsAction(ripple=false)", vCountFinal === videoCountBefore, [
-              `削除後Video件数=${vCountFinal}（期待${videoCountBefore}）`
-            ]);
+            push(
+              "SequenceEditor.createRemoveItemsAction(ripple=false)",
+              succeededVariant !== null,
+              [...attempts, succeededVariant ? `採用形: ${succeededVariant}` : "全バリエーション失敗"]
+            );
           } catch (e) {
             push("SequenceEditor.createRemoveItemsAction", false, [], String(e));
           }
