@@ -973,31 +973,56 @@
       outPoint: (await item.getOutPoint()).ticks
     };
   }
-  async function listAllItems(ppro2, seq) {
-    const out = [];
+  async function freshSequence(project, guid) {
+    const all = await project.getSequences();
+    const seq = all.find((s) => String(s.guid) === guid);
+    if (!seq) throw new Error(`\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093: ${guid}`);
+    return seq;
+  }
+  function runTransaction(project, label, buildActions) {
+    let innerError = null;
+    project.lockedAccess(() => {
+      try {
+        project.executeTransaction((compound) => {
+          for (const action of buildActions()) {
+            compound.addAction(action);
+          }
+        }, label);
+      } catch (e) {
+        innerError = e;
+      }
+    });
+    if (innerError) throw innerError;
+  }
+  async function scanAll(ppro2, project, guid) {
+    const seq = await freshSequence(project, guid);
     const clipType = clipTrackItemType(ppro2);
+    const out = [];
     const vCount = await seq.getVideoTrackCount();
     for (let i = 0; i < vCount; i++) {
       const track = await seq.getVideoTrack(i);
-      out.push({ track, kind: "video", items: track.getTrackItems(clipType, false) });
+      out.push({ kind: "video", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
     }
     const aCount = await seq.getAudioTrackCount();
     for (let i = 0; i < aCount; i++) {
       const track = await seq.getAudioTrack(i);
-      out.push({ track, kind: "audio", items: track.getTrackItems(clipType, false) });
+      out.push({ kind: "audio", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
     }
     return out;
   }
-  async function snapshotSequence(ppro2, seq) {
-    const tracks = await listAllItems(ppro2, seq);
+  async function sequenceFingerprint(ppro2, project, guid) {
+    const scans = await scanAll(ppro2, project, guid);
     const parts = [];
-    for (const t of tracks) {
-      for (const item of t.items) {
+    for (const scan of scans) {
+      for (const item of scan.items) {
         const s = await snapshotItem(item);
-        parts.push(`${t.kind}:${s.name}:${s.start}-${s.end}:${s.inPoint}/${s.outPoint}`);
+        parts.push(`${scan.kind}${scan.trackIndex}:${s.name}:${s.start}-${s.end}:${s.inPoint}/${s.outPoint}`);
       }
     }
     return parts.sort().join("|");
+  }
+  function countKind(scans, kind) {
+    return scans.filter((s) => s.kind === kind).reduce((n, s) => n + s.items.length, 0);
   }
   async function runMutatingProbe(ppro2) {
     const results = [];
@@ -1011,27 +1036,26 @@
       push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8", false, [], "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
       return results;
     }
-    const original = await project.getActiveSequence();
-    if (!original) {
+    const active = await project.getActiveSequence();
+    if (!active) {
       push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30B7\u30FC\u30B1\u30F3\u30B9", false, [], "\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u3042\u308A\u307E\u305B\u3093");
       return results;
     }
-    const originalSnapshotBefore = await snapshotSequence(ppro2, original);
-    const originalGuid = String(original.guid);
-    let clone = null;
+    const originalGuid = String(active.guid);
+    const originalFingerprint = await sequenceFingerprint(ppro2, project, originalGuid);
+    let cloneGuid = null;
     try {
       const before = await project.getSequences();
       const beforeGuids = new Set(before.map((s) => String(s.guid)));
-      const executed = project.executeTransaction((compound) => {
-        compound.addAction(original.createCloneAction());
-      }, "KazuCut Probe: \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD");
+      const fresh = await freshSequence(project, originalGuid);
+      runTransaction(project, "KazuCut Probe: \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD", () => [fresh.createCloneAction()]);
       const after = await project.getSequences();
       const added = after.filter((s) => !beforeGuids.has(String(s.guid)));
       if (added.length === 1 && added[0]) {
-        clone = added[0];
+        cloneGuid = String(added[0].guid);
         push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", true, [
-          `executeTransaction\u623B\u308A\u5024=${String(executed)}`,
-          `\u65B0\u898F\u30B7\u30FC\u30B1\u30F3\u30B91\u4EF6\u3092\u7279\u5B9A: name=${clone.name}`
+          `\u65B0\u898F\u30B7\u30FC\u30B1\u30F3\u30B91\u4EF6\u3092\u7279\u5B9A: name=${added[0].name}`,
+          "lockedAccess\u5185\u3067Action\u751F\u6210\u2192executeTransaction\u306E\u30D1\u30BF\u30FC\u30F3\u3067\u6210\u529F"
         ]);
       } else {
         push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", false, [
@@ -1041,148 +1065,182 @@
     } catch (e) {
       push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", false, [], String(e));
     }
-    if (clone) {
+    if (cloneGuid) {
+      const guid = cloneGuid;
       try {
-        const tracks = await listAllItems(ppro2, clone);
-        const withItems = tracks.filter((t) => t.items.length > 0);
+        const scans = await scanAll(ppro2, project, guid);
         push(
           "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u306ETrackItem\u5217\u6319",
           true,
-          withItems.map((t) => `${t.kind}[${t.track.name}]: ${t.items.length}\u4EF6`)
+          scans.filter((s) => s.items.length > 0).map((s) => `${s.kind}[${s.trackName}]: ${s.items.length}\u4EF6`)
         );
-        const videoTrack = tracks.find((t) => t.kind === "video" && t.items.length > 0);
-        const firstVideo = videoTrack?.items[0];
-        if (firstVideo && videoTrack) {
-          const editor = ppro2.SequenceEditor.getEditor(clone);
-          const seqEnd = (await clone.getEndTime()).ticks;
-          const vBefore = await snapshotItem(firstVideo);
-          try {
-            const audioCountBefore = (await listAllItems(ppro2, clone)).filter((t) => t.kind === "audio").reduce((n, t) => n + t.items.length, 0);
-            const videoCountBefore = (await listAllItems(ppro2, clone)).filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
-            const offsetTicks = subtractTicks(
-              subtractTicks(seqEnd, vBefore.start),
-              "-2540160000000"
-              // +10秒
-            );
-            const offsetT = ppro2.TickTime.createWithTicks(offsetTicks);
-            project.executeTransaction((compound) => {
-              compound.addAction(
-                editor.createCloneTrackItemAction(firstVideo, offsetT, 0, 0, true, false)
-              );
-            }, "KazuCut Probe: TrackItem Clone");
-            const afterClone = await listAllItems(ppro2, clone);
-            const videoCountAfter = afterClone.filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
-            const audioCountAfter = afterClone.filter((t) => t.kind === "audio").reduce((n, t) => n + t.items.length, 0);
-            const videoAdded = videoCountAfter - videoCountBefore;
-            const audioAdded = audioCountAfter - audioCountBefore;
-            push("SequenceEditor.createCloneTrackItemAction(isInsert=false)", videoAdded === 1, [
-              `\u65B0\u898FVideo TrackItem: ${videoAdded}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`,
-              `\u65B0\u898FAudio TrackItem: ${audioAdded}\u4EF6 \u2192 \u30EA\u30F3\u30AFAudio${audioAdded > 0 ? "\u3082\u540C\u6642\u8907\u88FD\u3055\u308C\u308B" : "\u306F\u8907\u88FD\u3055\u308C\u306A\u3044"}`,
-              `timeOffset\u306F\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8\u3068\u3057\u3066\u6E21\u3057\u305F`
-            ]);
-            const vTrackNow = afterClone.find(
-              (t) => t.kind === "video" && t.track.name === videoTrack.track.name
-            );
-            const newItems = [];
-            if (vTrackNow) {
-              for (const item of vTrackNow.items) {
-                const s = await snapshotItem(item);
-                if (s.start !== vBefore.start) newItems.push(item);
-              }
-            }
-            const cloned = newItems[0];
-            if (cloned) {
-              const clonedBefore = await snapshotItem(cloned);
-              try {
-                const target = "2540160000000";
-                project.executeTransaction((compound) => {
-                  compound.addAction(
-                    cloned.createMoveAction(ppro2.TickTime.createWithTicks(target))
-                  );
-                }, "KazuCut Probe: Move");
-                const moved = await snapshotItem(cloned);
-                let semantics = "\u4E0D\u660E";
-                if (moved.start === target) semantics = "\u7D76\u5BFE\u4F4D\u7F6E";
-                else {
-                  const expectOffset = subtractTicks(moved.start, clonedBefore.start);
-                  semantics = `\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8?\uFF08\u79FB\u52D5\u91CF=${expectOffset}\uFF09`;
-                }
-                push("trackItem.createMoveAction", true, [
-                  `\u79FB\u52D5\u524Dstart=${clonedBefore.start}`,
-                  `\u6307\u5B9A\u5024=${target}`,
-                  `\u79FB\u52D5\u5F8Cstart=${moved.start}`,
-                  `\u30BB\u30DE\u30F3\u30C6\u30A3\u30AF\u30B9\u5224\u5B9A: ${semantics}`
-                ]);
-              } catch (e) {
-                push("trackItem.createMoveAction", false, [], String(e));
-              }
-              try {
-                const newIn = subtractTicks(clonedBefore.inPoint, "-127008000000");
-                project.executeTransaction((compound) => {
-                  compound.addAction(
-                    cloned.createSetInPointAction(ppro2.TickTime.createWithTicks(newIn))
-                  );
-                }, "KazuCut Probe: SetInPoint");
-                const afterIn = await snapshotItem(cloned);
-                push("trackItem.createSetInPointAction", true, [
-                  `inPoint: ${clonedBefore.inPoint} \u2192 ${afterIn.inPoint}\uFF08\u671F\u5F85${newIn}\uFF09`,
-                  `start: ${clonedBefore.start} \u2192 ${afterIn.start}`,
-                  `end: ${clonedBefore.end} \u2192 ${afterIn.end}`
-                ]);
-              } catch (e) {
-                push("trackItem.createSetInPointAction", false, [], String(e));
-              }
-              try {
-                const selection = await clone.getSelection();
-                const existing = await selection.getTrackItems();
-                for (const it of existing) selection.removeItem(it);
-                selection.addItem(cloned, true);
-                const othersBefore = await snapshotSequence(ppro2, clone);
-                project.executeTransaction((compound) => {
-                  compound.addAction(
-                    editor.createRemoveItemsAction(selection, false, void 0, false)
-                  );
-                }, "KazuCut Probe: Remove");
-                const afterRemove = await listAllItems(ppro2, clone);
-                const vCountFinal = afterRemove.filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
-                push("SequenceEditor.createRemoveItemsAction(ripple=false)", true, [
-                  `\u524A\u9664\u5F8CVideo\u4EF6\u6570=${vCountFinal}\uFF08\u671F\u5F85${videoCountBefore}\uFF09`,
-                  othersBefore.length > 0 ? "\u524A\u9664\u524D\u30B9\u30CA\u30C3\u30D7\u30B7\u30E7\u30C3\u30C8\u53D6\u5F97\u6E08\u307F" : ""
-                ]);
-              } catch (e) {
-                push("SequenceEditor.createRemoveItemsAction", false, [], String(e));
-              }
-            } else {
-              push("Clone\u5F8C\u306E\u65B0\u898FTrackItem\u7279\u5B9A", false, ["start\u306E\u5DEE\u5206\u3067\u7279\u5B9A\u3067\u304D\u305A"]);
-            }
-          } catch (e) {
-            push("SequenceEditor.createCloneTrackItemAction", false, [], String(e));
-          }
+        const videoScan = scans.find((s) => s.kind === "video" && s.items.length > 0);
+        if (!videoScan) {
+          push("\u8907\u88FD\u4E0A\u306EVideo\u30AF\u30EA\u30C3\u30D7", false, [
+            "Video\u30AF\u30EA\u30C3\u30D7\u304C1\u3064\u3082\u3042\u308A\u307E\u305B\u3093\u3002\u30AF\u30EA\u30C3\u30D7\u306E\u3042\u308B\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044"
+          ]);
         } else {
-          push("\u8907\u88FD\u4E0A\u306EVideo\u30AF\u30EA\u30C3\u30D7", false, ["Video\u30AF\u30EA\u30C3\u30D7\u304C1\u3064\u3082\u3042\u308A\u307E\u305B\u3093\u3002\u30AF\u30EA\u30C3\u30D7\u306E\u3042\u308B\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044"]);
+          const videoCountBefore = countKind(scans, "video");
+          const audioCountBefore = countKind(scans, "audio");
+          const firstVideo = videoScan.items[0];
+          const vBefore = firstVideo ? await snapshotItem(firstVideo) : null;
+          let clonedFound = false;
+          let clonedStartTicks = "";
+          if (vBefore) {
+            try {
+              const seqNow = await freshSequence(project, guid);
+              const seqEnd = (await seqNow.getEndTime()).ticks;
+              const offsetTicks = addTicks(subtractTicks(seqEnd, vBefore.start), "2540160000000");
+              const scanNow = await scanAll(ppro2, project, guid);
+              const vTrackNow = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              const target = vTrackNow?.items[0];
+              if (!target) throw new Error("Clone\u5BFE\u8C61\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+              const seqForEditor = await freshSequence(project, guid);
+              const editor = ppro2.SequenceEditor.getEditor(seqForEditor);
+              const offsetT = ppro2.TickTime.createWithTicks(offsetTicks);
+              runTransaction(project, "KazuCut Probe: TrackItem Clone", () => [
+                editor.createCloneTrackItemAction(target, offsetT, 0, 0, true, false)
+              ]);
+              const afterScan = await scanAll(ppro2, project, guid);
+              const videoAdded = countKind(afterScan, "video") - videoCountBefore;
+              const audioAdded = countKind(afterScan, "audio") - audioCountBefore;
+              push("SequenceEditor.createCloneTrackItemAction(isInsert=false)", videoAdded === 1, [
+                `\u65B0\u898FVideo TrackItem: ${videoAdded}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`,
+                `\u65B0\u898FAudio TrackItem: ${audioAdded}\u4EF6 \u2192 \u30EA\u30F3\u30AFAudio${audioAdded > 0 ? "\u3082\u540C\u6642\u8907\u88FD\u3055\u308C\u308B" : "\u306F\u8907\u88FD\u3055\u308C\u306A\u3044"}`,
+                `timeOffset=${offsetTicks}\uFF08\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8\u3068\u3057\u3066\u6307\u5B9A\uFF09`
+              ]);
+              const vTrackAfter = afterScan.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              if (vTrackAfter) {
+                for (const item of vTrackAfter.items) {
+                  const s = await snapshotItem(item);
+                  if (s.start !== vBefore.start) {
+                    clonedFound = true;
+                    clonedStartTicks = s.start;
+                    push("Clone\u5F8C\u306E\u65B0\u898FTrackItem\u7279\u5B9A\uFF08start\u5DEE\u5206\uFF09", true, [
+                      `\u8907\u88FD\u4F4D\u7F6E start=${s.start}\uFF08\u671F\u5F85: \u5143start+offset=${addTicks(vBefore.start, offsetTicks)}\uFF09`
+                    ]);
+                    break;
+                  }
+                }
+              }
+              if (!clonedFound) {
+                push("Clone\u5F8C\u306E\u65B0\u898FTrackItem\u7279\u5B9A\uFF08start\u5DEE\u5206\uFF09", false, ["\u5DEE\u5206\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093"]);
+              }
+            } catch (e) {
+              push("SequenceEditor.createCloneTrackItemAction", false, [], String(e));
+            }
+          }
+          if (clonedFound) {
+            try {
+              const target = "2540160000000";
+              const scanNow = await scanAll(ppro2, project, guid);
+              const vTrack = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              let moveTarget;
+              for (const item of vTrack?.items ?? []) {
+                if ((await item.getStartTime()).ticks === clonedStartTicks) moveTarget = item;
+              }
+              if (!moveTarget) throw new Error("Move\u5BFE\u8C61\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+              const before = await snapshotItem(moveTarget);
+              runTransaction(project, "KazuCut Probe: Move", () => [
+                moveTarget.createMoveAction(ppro2.TickTime.createWithTicks(target))
+              ]);
+              const scanAfter = await scanAll(ppro2, project, guid);
+              const vTrackAfter = scanAfter.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              const starts = [];
+              for (const item of vTrackAfter?.items ?? []) {
+                starts.push((await item.getStartTime()).ticks);
+              }
+              let semantics = "\u5224\u5B9A\u4E0D\u80FD";
+              let movedStart = "";
+              if (starts.includes(target)) {
+                semantics = "\u7D76\u5BFE\u4F4D\u7F6E\uFF08\u6307\u5B9Atick\u3078\u79FB\u52D5\uFF09";
+                movedStart = target;
+              } else {
+                const relative = addTicks(before.start, target);
+                if (starts.includes(relative)) {
+                  semantics = "\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8\uFF08\u73FE\u5728\u4F4D\u7F6E+\u6307\u5B9Atick\uFF09";
+                  movedStart = relative;
+                }
+              }
+              clonedStartTicks = movedStart || clonedStartTicks;
+              push("trackItem.createMoveAction", semantics !== "\u5224\u5B9A\u4E0D\u80FD", [
+                `\u79FB\u52D5\u524Dstart=${before.start} / \u6307\u5B9A\u5024=${target}`,
+                `\u79FB\u52D5\u5F8C\u306E\u5168start=[${starts.join(", ")}]`,
+                `\u30BB\u30DE\u30F3\u30C6\u30A3\u30AF\u30B9\u5224\u5B9A: ${semantics}`
+              ]);
+            } catch (e) {
+              push("trackItem.createMoveAction", false, [], String(e));
+            }
+            try {
+              const scanNow = await scanAll(ppro2, project, guid);
+              const vTrack = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              let target;
+              for (const item of vTrack?.items ?? []) {
+                if ((await item.getStartTime()).ticks === clonedStartTicks) target = item;
+              }
+              if (!target) throw new Error("SetInPoint\u5BFE\u8C61\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+              const before = await snapshotItem(target);
+              const newIn = addTicks(before.inPoint, "127008000000");
+              runTransaction(project, "KazuCut Probe: SetInPoint", () => [
+                target.createSetInPointAction(ppro2.TickTime.createWithTicks(newIn))
+              ]);
+              const scanAfter = await scanAll(ppro2, project, guid);
+              const vTrackAfter = scanAfter.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              const details = [];
+              for (const item of vTrackAfter?.items ?? []) {
+                const s = await snapshotItem(item);
+                details.push(`start=${s.start} in=${s.inPoint} out=${s.outPoint} end=${s.end}`);
+              }
+              push("trackItem.createSetInPointAction", true, [
+                `\u5909\u66F4\u524D: start=${before.start} in=${before.inPoint} end=${before.end}`,
+                `\u6307\u5B9AIn=${newIn}`,
+                ...details.map((d) => `\u5909\u66F4\u5F8C: ${d}`)
+              ]);
+            } catch (e) {
+              push("trackItem.createSetInPointAction", false, [], String(e));
+            }
+            try {
+              const seqNow = await freshSequence(project, guid);
+              const scanNow = await scanAll(ppro2, project, guid);
+              const vTrack = scanNow.find((s) => s.kind === "video" && s.trackIndex === videoScan.trackIndex);
+              let removeTarget;
+              for (const item of vTrack?.items ?? []) {
+                const s = (await item.getStartTime()).ticks;
+                if (vBefore && s !== vBefore.start) removeTarget = item;
+              }
+              if (!removeTarget) throw new Error("Remove\u5BFE\u8C61\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+              const selection = await seqNow.getSelection();
+              const existing = await selection.getTrackItems();
+              for (const it of existing) selection.removeItem(it);
+              selection.addItem(removeTarget, true);
+              const editor = ppro2.SequenceEditor.getEditor(seqNow);
+              runTransaction(project, "KazuCut Probe: Remove", () => [
+                editor.createRemoveItemsAction(selection, false, void 0, false)
+              ]);
+              const afterScan = await scanAll(ppro2, project, guid);
+              const vCountFinal = countKind(afterScan, "video");
+              push("SequenceEditor.createRemoveItemsAction(ripple=false)", vCountFinal === videoCountBefore, [
+                `\u524A\u9664\u5F8CVideo\u4EF6\u6570=${vCountFinal}\uFF08\u671F\u5F85${videoCountBefore}\uFF09`
+              ]);
+            } catch (e) {
+              push("SequenceEditor.createRemoveItemsAction", false, [], String(e));
+            }
+          }
         }
       } catch (e) {
         push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0A\u306E\u5B9F\u9A13", false, [], String(e));
       }
       try {
-        const deleted = await project.deleteSequence(clone);
-        push("project.deleteSequence(\u8907\u88FD\u306E\u5F8C\u59CB\u672B)", deleted === true, [
-          `\u623B\u308A\u5024=${String(deleted)}`
-        ]);
+        const cloneFresh = await freshSequence(project, guid);
+        const deleted = await project.deleteSequence(cloneFresh);
+        push("project.deleteSequence(\u8907\u88FD\u306E\u5F8C\u59CB\u672B)", deleted === true, [`\u623B\u308A\u5024=${String(deleted)}`]);
       } catch (e) {
-        push("project.deleteSequence", false, [
-          "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u6B8B\u3063\u3066\u3044\u307E\u3059\u3002\u624B\u52D5\u3067\u524A\u9664\u3057\u3066\u304F\u3060\u3055\u3044"
-        ], String(e));
+        push("project.deleteSequence", false, ["\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u6B8B\u3063\u3066\u3044\u307E\u3059\u3002\u624B\u52D5\u3067\u524A\u9664\u3057\u3066\u304F\u3060\u3055\u3044"], String(e));
       }
     }
     try {
-      const originalAfter = await project.getSequences();
-      const stillThere = originalAfter.some((s) => String(s.guid) === originalGuid);
-      const snapshotAfter = stillThere ? await snapshotSequence(
-        ppro2,
-        originalAfter.find((s) => String(s.guid) === originalGuid) ?? original
-      ) : "";
-      const intact = stillThere && snapshotAfter === originalSnapshotBefore;
+      const fingerprintAfter = await sequenceFingerprint(ppro2, project, originalGuid);
+      const intact = fingerprintAfter === originalFingerprint;
       push("\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", intact, [
         intact ? "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306E\u5168TrackItem\u304C\u5909\u66F4\u3055\u308C\u3066\u3044\u306A\u3044\u3053\u3068\u3092\u78BA\u8A8D" : "\u26A0\uFE0F \u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306B\u5DEE\u5206\u304C\u3042\u308A\u307E\u3059\u3002Undo(Ctrl+Z)\u3067\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044"
       ]);
