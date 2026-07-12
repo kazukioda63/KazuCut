@@ -88,16 +88,23 @@
   };
 
   // plugin/src/native/hybridAddonAdapter.ts
-  function tryLoadHybridAddon() {
+  async function loadHybridAddon() {
     const req = globalThis.require;
-    if (typeof req !== "function") return null;
+    if (typeof req !== "function") {
+      return { ok: false, error: "require\u95A2\u6570\u304C\u3042\u308A\u307E\u305B\u3093\uFF08UXP\u74B0\u5883\u5916\uFF09" };
+    }
     let addon;
     try {
-      addon = req("kazucut-native.uxpaddon");
-    } catch {
-      return null;
+      addon = await Promise.resolve(req("kazucut-native.uxpaddon"));
+    } catch (e) {
+      return {
+        ok: false,
+        error: `require("kazucut-native.uxpaddon")\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`
+      };
     }
-    if (typeof addon !== "object" || addon === null) return null;
+    if (typeof addon !== "object" || addon === null) {
+      return { ok: false, error: `addon\u304C\u30AA\u30D6\u30B8\u30A7\u30AF\u30C8\u3067\u306F\u3042\u308A\u307E\u305B\u3093: ${typeof addon}` };
+    }
     const a = addon;
     const fns = [
       "getVersion",
@@ -108,21 +115,28 @@
       "cancelJob",
       "disposeJob"
     ];
-    for (const f of fns) {
-      if (typeof a[f] !== "function") return null;
+    const missing = fns.filter((f) => typeof a[f] !== "function");
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        error: `addon\u306B\u95A2\u6570\u304C\u3042\u308A\u307E\u305B\u3093: ${missing.join(", ")}\uFF08\u5B58\u5728\u3059\u308B\u30AD\u30FC: ${Object.keys(a).join(", ")}\uFF09`
+      };
     }
     const call = (name, ...args) => a[name](...args);
     return {
-      getVersion: () => {
-        const raw = call("getVersion");
-        return JSON.parse(raw);
-      },
-      healthCheck: () => String(call("healthCheck")),
-      startJob: (requestJson) => String(call("startJob", requestJson)),
-      getJobStatus: (jobId) => String(call("getJobStatus", jobId)),
-      getJobResult: (jobId) => String(call("getJobResult", jobId)),
-      cancelJob: (jobId) => Boolean(call("cancelJob", jobId)),
-      disposeJob: (jobId) => Boolean(call("disposeJob", jobId))
+      ok: true,
+      bridge: {
+        getVersion: () => {
+          const raw = call("getVersion");
+          return JSON.parse(raw);
+        },
+        healthCheck: () => String(call("healthCheck")),
+        startJob: (requestJson) => String(call("startJob", requestJson)),
+        getJobStatus: (jobId) => String(call("getJobStatus", jobId)),
+        getJobResult: (jobId) => String(call("getJobResult", jobId)),
+        cancelJob: (jobId) => Boolean(call("cancelJob", jobId)),
+        disposeJob: (jobId) => Boolean(call("disposeJob", jobId))
+      }
     };
   }
 
@@ -1902,9 +1916,31 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1147" : "dev";
-  var bridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3e3);
-  var bridgeIsMock = bridge instanceof MockNativeAdapter;
+  var BUILD_ID = true ? "20260712T1155" : "dev";
+  var bridge = new MockNativeAdapter(3e3);
+  var bridgeIsMock = true;
+  var addonLoadError = "";
+  async function initBridge() {
+    const result = await loadHybridAddon();
+    if (result.ok) {
+      bridge = result.bridge;
+      bridgeIsMock = false;
+      try {
+        const v = bridge.getVersion();
+        showBanner(
+          `\u30CD\u30A4\u30C6\u30A3\u30D6\u63A5\u7D9AOK: addon ${v.addonVersion} / ${v.architecture} / Worker${v.workerAvailable ? "\u691C\u51FA\u6E08\u307F" : "\u672A\u691C\u51FA(WORKER_NOT_FOUND)"}`
+        );
+      } catch (e) {
+        showBanner(`Addon\u306F\u30ED\u30FC\u30C9\u3055\u308C\u307E\u3057\u305F\u304C getVersion \u3067\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else {
+      addonLoadError = result.error;
+      showBanner(
+        `\u30CD\u30A4\u30C6\u30A3\u30D6\u30E2\u30B8\u30E5\u30FC\u30EB\u672A\u63A5\u7D9A\uFF08Mock\u30E2\u30FC\u30C9\uFF09\u3002
+\u30ED\u30FC\u30C9\u5931\u6557\u306E\u7406\u7531: ${addonLoadError}`
+      );
+    }
+  }
   function tryLoadPremiere() {
     const req = globalThis.require;
     if (typeof req !== "function") return null;
@@ -2337,11 +2373,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     settingsToUi();
     el("scopeSelect").value = "selection";
     void populateTracksFromPremiere();
-    if (bridgeIsMock) {
-      showBanner(
-        "\u30CD\u30A4\u30C6\u30A3\u30D6\u30E2\u30B8\u30E5\u30FC\u30EB\u672A\u63A5\u7D9A\uFF08\u958B\u767AMock\u30E2\u30FC\u30C9\uFF09\u3002\nWindows + Hybrid SDK\u74B0\u5883\u3067\u306E\u30D3\u30EB\u30C9\u624B\u9806\u306FSDK_SETUP_REQUIRED.md\u3092\u53C2\u7167\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
-      );
-    }
+    void initBridge();
     $.presetSelect().addEventListener("change", () => {
       const name = $.presetSelect().value;
       const preset = [...builtInPresets(), ...state.customPresets].find((p) => p.name === name);

@@ -7,7 +7,7 @@
  *   解析（無音候補の生成・確認）とテストジョブは動作する。
  */
 import { MockNativeAdapter } from "./native/mockNativeAdapter";
-import { tryLoadHybridAddon } from "./native/hybridAddonAdapter";
+import { loadHybridAddon } from "./native/hybridAddonAdapter";
 import { pollJob } from "./native/jobPoller";
 import { buildJobRequest } from "./analysis/analysisController";
 import { mergeCandidates } from "./analysis/candidateMerger";
@@ -25,8 +25,33 @@ declare const __KAZUCUT_BUILD__: string;
 const BUILD_ID = typeof __KAZUCUT_BUILD__ === "string" ? __KAZUCUT_BUILD__ : "dev";
 
 // ---- 環境検出 ----
-const bridge: NativeBridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3000);
-const bridgeIsMock = bridge instanceof MockNativeAdapter;
+// Hybrid Addonのロードは非同期（実機知見）。確定までMockで初期化し、initで差し替える
+let bridge: NativeBridge = new MockNativeAdapter(3000);
+let bridgeIsMock = true;
+let addonLoadError = "";
+
+async function initBridge(): Promise<void> {
+  const result = await loadHybridAddon();
+  if (result.ok) {
+    bridge = result.bridge;
+    bridgeIsMock = false;
+    try {
+      const v = bridge.getVersion();
+      showBanner(
+        `ネイティブ接続OK: addon ${v.addonVersion} / ${v.architecture} / ` +
+        `Worker${v.workerAvailable ? "検出済み" : "未検出(WORKER_NOT_FOUND)"}`
+      );
+    } catch (e) {
+      showBanner(`Addonはロードされましたが getVersion で失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } else {
+    addonLoadError = result.error;
+    showBanner(
+      "ネイティブモジュール未接続（Mockモード）。\n" +
+      `ロード失敗の理由: ${addonLoadError}`
+    );
+  }
+}
 
 function tryLoadPremiere(): Record<string, unknown> | null {
   const req = (globalThis as { require?: (id: string) => unknown }).require;
@@ -482,13 +507,7 @@ function init(): void {
   // UXPの<select>は明示的にvalueを設定しないと未選択表示になる
   el<HTMLSelectElement>("scopeSelect").value = "selection";
   void populateTracksFromPremiere();
-
-  if (bridgeIsMock) {
-    showBanner(
-      "ネイティブモジュール未接続（開発Mockモード）。\n" +
-      "Windows + Hybrid SDK環境でのビルド手順はSDK_SETUP_REQUIRED.mdを参照してください。"
-    );
-  }
+  void initBridge();
 
   $.presetSelect().addEventListener("change", () => {
     const name = $.presetSelect().value;
