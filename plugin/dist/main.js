@@ -774,6 +774,79 @@
       uiState: {}
     };
   }
+  async function loadState(storage2) {
+    let text;
+    try {
+      text = await storage2.read();
+    } catch {
+      return defaultState();
+    }
+    if (text === null || text.trim() === "") return defaultState();
+    let raw;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      return defaultState();
+    }
+    if (typeof raw !== "object" || raw === null) return defaultState();
+    const obj = raw;
+    if (obj.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
+      return defaultState();
+    }
+    const def = defaultState();
+    const state2 = {
+      schemaVersion: SETTINGS_SCHEMA_VERSION,
+      currentSettings: obj.currentSettings ?? def.currentSettings,
+      customPresets: Array.isArray(obj.customPresets) ? obj.customPresets : [],
+      lastVideoTrackIndex: typeof obj.lastVideoTrackIndex === "number" ? obj.lastVideoTrackIndex : 0,
+      lastAudioTrackIndex: typeof obj.lastAudioTrackIndex === "number" ? obj.lastAudioTrackIndex : 0,
+      outputMode: obj.outputMode === "direct" ? "direct" : "duplicate",
+      whisperModelToken: typeof obj.whisperModelToken === "string" ? obj.whisperModelToken : null,
+      uiState: typeof obj.uiState === "object" && obj.uiState !== null ? obj.uiState : {}
+    };
+    if (validateSettings(state2.currentSettings).length > 0) {
+      state2.currentSettings = def.currentSettings;
+    }
+    state2.customPresets = state2.customPresets.filter(
+      (p) => typeof p.name === "string" && p.name.length > 0 && !p.builtIn && p.settings !== void 0 && validateSettings(p.settings).length === 0
+    );
+    return state2;
+  }
+  async function saveState(storage2, state2) {
+    await storage2.write(JSON.stringify(state2, null, 2));
+  }
+
+  // plugin/src/state/uxpStorage.ts
+  function createUxpStorage(fileName = "settings.json") {
+    const req = globalThis.require;
+    if (typeof req !== "function") return null;
+    let uxp;
+    try {
+      uxp = req("uxp");
+    } catch {
+      return null;
+    }
+    const lfs = uxp.storage?.localFileSystem;
+    if (!lfs) return null;
+    const utf8 = uxp.storage?.formats?.utf8;
+    return {
+      read: async () => {
+        try {
+          const folder = await lfs.getDataFolder();
+          const entry = await folder.getEntry(fileName);
+          const text = await entry.read(utf8 ? { format: utf8 } : void 0);
+          return typeof text === "string" ? text : null;
+        } catch {
+          return null;
+        }
+      },
+      write: async (data) => {
+        const folder = await lfs.getDataFolder();
+        const file = await folder.createFile(fileName, { overwrite: true });
+        await file.write(data, utf8 ? { format: utf8 } : void 0);
+      }
+    };
+  }
 
   // plugin/src/premiere/apiProbe.ts
   function typeName(v) {
@@ -2254,7 +2327,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1308" : "dev";
+  var BUILD_ID = true ? "20260712T1326" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2290,6 +2363,30 @@
   }
   var ppro = tryLoadPremiere();
   var state = defaultState();
+  var storage = createUxpStorage();
+  var saveTimer = null;
+  function scheduleSave() {
+    if (!storage) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        uiToSettings();
+        state.lastVideoTrackIndex = Number(el("videoTrackSelect").value || "0");
+        state.lastAudioTrackIndex = Number(el("audioTrackSelect").value || "0");
+        void saveState(storage, state);
+      } catch {
+      }
+    }, 500);
+  }
+  async function restoreState() {
+    if (!storage) return;
+    try {
+      state = await loadState(storage);
+      populatePresets();
+      settingsToUi();
+    } catch {
+    }
+  }
   var analysisContext = null;
   var candidates = [];
   var running = false;
@@ -2532,6 +2629,17 @@
       { mergeGapMs: state.currentSettings.silence.mergeGapMs, minSpeechMs: state.currentSettings.silence.minSpeechMs }
     );
   }
+  async function jumpToCandidate(c) {
+    if (!ppro || !analysisContext) return;
+    try {
+      const mod = ppro;
+      const project = await mod.Project.getActiveProject();
+      const seq = project ? await project.getActiveSequence() : null;
+      if (!project || !seq || String(seq.guid) !== analysisContext.sequenceGuid) return;
+      await seq.setPlayerPosition(mod.TickTime.createWithTicks(c.sequenceStartTicks));
+    } catch {
+    }
+  }
   function formatTime(ms) {
     const m = Math.floor(ms / 6e4);
     const s = (ms % 6e4 / 1e3).toFixed(3).padStart(6, "0");
@@ -2553,12 +2661,17 @@
       });
       const meta = document.createElement("div");
       meta.className = "meta";
+      meta.style.cursor = "pointer";
+      meta.title = "\u30AF\u30EA\u30C3\u30AF\u3067\u3053\u306E\u5834\u9762\u3078\u30B8\u30E3\u30F3\u30D7";
+      meta.addEventListener("click", () => void jumpToCandidate(c));
       meta.innerHTML = `<div class="time">${formatTime(approxStartMs(c))}</div><div>${c.reason === "filler" ? `\u30D5\u30A3\u30E9\u30FC\u300C${c.detectedText ?? ""}\u300D` : "\u7121\u97F3"}</div><div>${(c.originalDurationMs / 1e3).toFixed(2)}\u79D2 \u2192 ${(c.retainedDurationMs / 1e3).toFixed(2)}\u79D2</div>` + (c.warnings.length ? `<div class="warn">${c.warnings.join(" / ")}</div>` : "");
       div.appendChild(check);
       div.appendChild(meta);
       container.appendChild(div);
     }
     updateSummary();
+    const bulk = document.getElementById("bulkOps");
+    if (bulk) bulk.style.display = candidates.length > 0 ? "flex" : "none";
     $.applyArea().style.display = candidates.length > 0 ? "block" : "none";
     $.applyButton().disabled = analysisContext === null;
     el("applySummary").textContent = analysisContext === null ? "Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u9069\u7528\u3067\u304D\u307E\u305B\u3093\uFF08\u5019\u88DC\u78BA\u8A8D\u306E\u30C7\u30E2\u8868\u793A\uFF09\u3002" : `\u5BFE\u8C61: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} \u30FB \u3053\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u76F4\u63A5\u30AB\u30C3\u30C8\u3057\u307E\u3059\uFF08\u623B\u3059\u5834\u5408\u306FCtrl+Z\uFF09 \u30FB \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF: \u5909\u66F4\u3057\u307E\u305B\u3093`;
@@ -2642,8 +2755,8 @@
         opt.textContent = `A${i + 1} (${track.name})`;
         aSel.appendChild(opt);
       }
-      vSel.value = "0";
-      aSel.value = "0";
+      vSel.value = String(state.lastVideoTrackIndex < vCount ? state.lastVideoTrackIndex : 0);
+      aSel.value = String(state.lastAudioTrackIndex < aCount ? state.lastAudioTrackIndex : 0);
     } catch {
     }
   }
@@ -2808,8 +2921,9 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     populatePresets();
     settingsToUi();
     el("scopeSelect").value = "selection";
-    void populateTracksFromPremiere();
+    void restoreState().then(() => populateTracksFromPremiere());
     void initBridge();
+    document.getElementById("scrollRoot")?.addEventListener("change", scheduleSave);
     $.presetSelect().addEventListener("change", () => {
       const name = $.presetSelect().value;
       const preset = [...builtInPresets(), ...state.customPresets].find((p) => p.name === name);
@@ -2837,6 +2951,14 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     on("phase3Button", () => {
       void runPhase3Ui();
     });
+    on("selectAllButton", () => {
+      for (const c of candidates) c.selected = true;
+      renderCandidates([...candidates]);
+    });
+    on("selectNoneButton", () => {
+      for (const c of candidates) c.selected = false;
+      renderCandidates([...candidates]);
+    });
     on("applyButton", () => {
       void applySelected();
     });
@@ -2850,6 +2972,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
       });
       populatePresets();
       $.presetSelect().value = name;
+      scheduleSave();
     });
   }
   function safeInit() {

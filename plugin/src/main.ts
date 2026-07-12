@@ -12,7 +12,8 @@ import { pollJob } from "./native/jobPoller";
 import { buildJobRequest } from "./analysis/analysisController";
 import { mergeCandidates } from "./analysis/candidateMerger";
 import { builtInPresets, validateSettings } from "./state/presets";
-import { defaultState, type StoredState } from "./state/settingsStore";
+import { defaultState, loadState, saveState, type StoredState } from "./state/settingsStore";
+import { createUxpStorage } from "./state/uxpStorage";
 import { runApiProbe } from "./premiere/apiProbe";
 import { runMutatingProbe } from "./premiere/mutatingProbe";
 import { runPhase3Demo } from "./premiere/phase3Demo";
@@ -66,7 +67,37 @@ function tryLoadPremiere(): Record<string, unknown> | null {
 const ppro = tryLoadPremiere();
 
 // ---- 状態 ----
-const state: StoredState = defaultState();
+let state: StoredState = defaultState();
+const storage = createUxpStorage();
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 設定を plugin-data:/ へ保存（500msデバウンス） */
+function scheduleSave(): void {
+  if (!storage) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      uiToSettings();
+      state.lastVideoTrackIndex = Number(el<HTMLSelectElement>("videoTrackSelect").value || "0");
+      state.lastAudioTrackIndex = Number(el<HTMLSelectElement>("audioTrackSelect").value || "0");
+      void saveState(storage, state);
+    } catch {
+      // 保存失敗で操作を妨げない
+    }
+  }, 500);
+}
+
+/** 保存済み設定の復元（起動時） */
+async function restoreState(): Promise<void> {
+  if (!storage) return;
+  try {
+    state = await loadState(storage);
+    populatePresets();
+    settingsToUi();
+  } catch {
+    // 復元失敗時はデフォルトのまま
+  }
+}
 let analysisContext: AnalysisContext | null = null;
 let candidates: CutCandidate[] = [];
 let running = false;
@@ -309,6 +340,20 @@ function demoCandidates(): CutCandidate[] {
   );
 }
 
+/** 候補の位置へ再生ヘッドを移動（解析時と同じシーケンスの場合のみ） */
+async function jumpToCandidate(c: CutCandidate): Promise<void> {
+  if (!ppro || !analysisContext) return;
+  try {
+    const mod = ppro as unknown as PproModule;
+    const project = await mod.Project.getActiveProject();
+    const seq = project ? await project.getActiveSequence() : null;
+    if (!project || !seq || String(seq.guid) !== analysisContext.sequenceGuid) return;
+    await seq.setPlayerPosition(mod.TickTime.createWithTicks(c.sequenceStartTicks));
+  } catch {
+    // ジャンプ失敗は無視（表示専用機能）
+  }
+}
+
 function formatTime(ms: number): string {
   const m = Math.floor(ms / 60000);
   const s = ((ms % 60000) / 1000).toFixed(3).padStart(6, "0");
@@ -331,6 +376,9 @@ function renderCandidates(list: CutCandidate[]): void {
     });
     const meta = document.createElement("div");
     meta.className = "meta";
+    meta.style.cursor = "pointer";
+    meta.title = "クリックでこの場面へジャンプ";
+    meta.addEventListener("click", () => void jumpToCandidate(c));
     meta.innerHTML =
       `<div class="time">${formatTime(approxStartMs(c))}</div>` +
       `<div>${c.reason === "filler" ? `フィラー「${c.detectedText ?? ""}」` : "無音"}</div>` +
@@ -341,6 +389,8 @@ function renderCandidates(list: CutCandidate[]): void {
     container.appendChild(div);
   }
   updateSummary();
+  const bulk = document.getElementById("bulkOps");
+  if (bulk) bulk.style.display = candidates.length > 0 ? "flex" : "none";
   $.applyArea().style.display = candidates.length > 0 ? "block" : "none";
   // 実解析済み（context保持）の場合のみ適用可能
   $.applyButton().disabled = analysisContext === null;
@@ -436,8 +486,8 @@ async function populateTracksFromPremiere(): Promise<void> {
       opt.textContent = `A${i + 1} (${track.name})`;
       aSel.appendChild(opt);
     }
-    vSel.value = "0";
-    aSel.value = "0";
+    vSel.value = String(state.lastVideoTrackIndex < vCount ? state.lastVideoTrackIndex : 0);
+    aSel.value = String(state.lastAudioTrackIndex < aCount ? state.lastAudioTrackIndex : 0);
   } catch {
     // シーケンス未オープン等。解析実行時に再チェックする
   }
@@ -618,8 +668,11 @@ function init(): void {
   settingsToUi();
   // UXPの<select>は明示的にvalueを設定しないと未選択表示になる
   el<HTMLSelectElement>("scopeSelect").value = "selection";
-  void populateTracksFromPremiere();
+  // 保存済み設定を復元してからトラック一覧を反映（トラック選択の復元に依存）
+  void restoreState().then(() => populateTracksFromPremiere());
   void initBridge();
+  // 設定変更の自動保存（changeイベントはパネル全体からバブルする）
+  document.getElementById("scrollRoot")?.addEventListener("change", scheduleSave);
 
   $.presetSelect().addEventListener("change", () => {
     const name = $.presetSelect().value;
@@ -650,6 +703,14 @@ function init(): void {
   on("phase3Button", () => {
     void runPhase3Ui();
   });
+  on("selectAllButton", () => {
+    for (const c of candidates) c.selected = true;
+    renderCandidates([...candidates]);
+  });
+  on("selectNoneButton", () => {
+    for (const c of candidates) c.selected = false;
+    renderCandidates([...candidates]);
+  });
   on("applyButton", () => {
     void applySelected();
   });
@@ -663,6 +724,7 @@ function init(): void {
     });
     populatePresets();
     $.presetSelect().value = name;
+    scheduleSave();
   });
 }
 
