@@ -115,7 +115,7 @@ export async function runRealAnalysis(
   try {
     const seqFresh = await freshSequence(project, guid);
     const track = await seqFresh.getVideoTrack(videoTrackIndex);
-    const items = track.getTrackItems(clipTrackItemType(ppro), false);
+    const items = track.getTrackItems(clipTrackItemType(ppro), false).filter((x) => x != null);
     const item = items[0];
     if (!item) throw new Error("TrackItem再取得失敗");
     const projectItem = await item.getProjectItem();

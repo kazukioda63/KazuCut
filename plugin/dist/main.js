@@ -1016,12 +1016,12 @@
     const vCount = await seq.getVideoTrackCount();
     for (let i = 0; i < vCount; i++) {
       const track = await seq.getVideoTrack(i);
-      out.push({ kind: "video", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
+      out.push({ kind: "video", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false).filter((x) => x != null) });
     }
     const aCount = await seq.getAudioTrackCount();
     for (let i = 0; i < aCount; i++) {
       const track = await seq.getAudioTrack(i);
-      out.push({ kind: "audio", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
+      out.push({ kind: "audio", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false).filter((x) => x != null) });
     }
     return out;
   }
@@ -1468,12 +1468,12 @@
   async function liveItems(ppro2, project, guid, kind, index) {
     const seq = await freshSequence2(project, guid);
     const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
-    return track.getTrackItems(clipTrackItemType(ppro2), false);
+    return track.getTrackItems(clipTrackItemType(ppro2), false).filter((x) => x != null);
   }
   async function scanTrack(ppro2, project, guid, kind, index) {
     const seq = await freshSequence2(project, guid);
     const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
-    const items = track.getTrackItems(clipTrackItemType(ppro2), false);
+    const items = track.getTrackItems(clipTrackItemType(ppro2), false).filter((x) => x != null);
     const out = [];
     for (const item of items) {
       const projectItem = await item.getProjectItem().catch(() => null);
@@ -1660,38 +1660,46 @@
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       if (!seg) continue;
-      let tempPos = tempBase;
-      for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
-      const cloned = await cloneClipToTemp(
-        ppro2,
-        project,
-        guid,
-        kind,
-        trackIndex,
-        originalStartTicks,
-        tempPos
-      );
-      log(`${kind} seg${i}: \u8907\u88FDOK\uFF08\u5B9F\u4F4D\u7F6E ${cloned.observedStartTicks}\uFF09`);
-      const trimmed = await setClipInOut(
-        ppro2,
-        project,
-        guid,
-        kind,
-        trackIndex,
-        cloned.observedStartTicks,
-        seg.sourceInTicks,
-        seg.sourceOutTicks
-      );
-      log(`${kind} seg${i}: In/Out\u8A2D\u5B9AOK\uFF08\u5B9F\u4F4D\u7F6E ${trimmed.observedStartTicks}\uFF09`);
-      placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
+      try {
+        let tempPos = tempBase;
+        for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
+        const cloned = await cloneClipToTemp(
+          ppro2,
+          project,
+          guid,
+          kind,
+          trackIndex,
+          originalStartTicks,
+          tempPos
+        );
+        log(`${kind} seg${i}/${segments.length}: \u8907\u88FDOK`);
+        const trimmed = await setClipInOut(
+          ppro2,
+          project,
+          guid,
+          kind,
+          trackIndex,
+          cloned.observedStartTicks,
+          seg.sourceInTicks,
+          seg.sourceOutTicks
+        );
+        log(`${kind} seg${i}/${segments.length}: In/Out\u8A2D\u5B9AOK`);
+        placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
+      } catch (e) {
+        throw new Error(`${kind} seg${i}/${segments.length}\u3067\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     await removeClipAt(ppro2, project, guid, kind, trackIndex, originalStartTicks);
     log(`${kind}: \u5143\u30AF\u30EA\u30C3\u30D7\u524A\u9664OK`);
     for (let i = 0; i < placed.length; i++) {
       const p = placed[i];
       if (!p) continue;
-      await moveClipTo(ppro2, project, guid, kind, trackIndex, p.startTicks, p.dest);
-      log(`${kind} seg${i}: \u76EE\u7684\u4F4D\u7F6E ${p.dest} \u3078\u914D\u7F6EOK`);
+      try {
+        await moveClipTo(ppro2, project, guid, kind, trackIndex, p.startTicks, p.dest);
+        log(`${kind} seg${i}/${placed.length}: \u914D\u7F6EOK`);
+      } catch (e) {
+        throw new Error(`${kind} seg${i}\u306E\u914D\u7F6E\u3067\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 
@@ -1971,7 +1979,7 @@
     try {
       const seqFresh = await freshSequence2(project, guid);
       const track = await seqFresh.getVideoTrack(videoTrackIndex);
-      const items = track.getTrackItems(clipTrackItemType(ppro2), false);
+      const items = track.getTrackItems(clipTrackItemType(ppro2), false).filter((x) => x != null);
       const item = items[0];
       if (!item) throw new Error("TrackItem\u518D\u53D6\u5F97\u5931\u6557");
       const projectItem = await item.getProjectItem();
@@ -2250,7 +2258,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1238" : "dev";
+  var BUILD_ID = true ? "20260712T1244" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";

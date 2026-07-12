@@ -83,12 +83,12 @@ async function scanAll(ppro: PproModule, project: PproProject, guid: string): Pr
   const vCount = await seq.getVideoTrackCount();
   for (let i = 0; i < vCount; i++) {
     const track = await seq.getVideoTrack(i);
-    out.push({ kind: "video", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
+    out.push({ kind: "video", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false).filter((x) => x != null) });
   }
   const aCount = await seq.getAudioTrackCount();
   for (let i = 0; i < aCount; i++) {
     const track = await seq.getAudioTrack(i);
-    out.push({ kind: "audio", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false) });
+    out.push({ kind: "audio", trackName: track.name, trackIndex: i, items: track.getTrackItems(clipType, false).filter((x) => x != null) });
   }
   return out;
 }

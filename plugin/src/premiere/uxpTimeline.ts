@@ -66,7 +66,8 @@ async function liveItems(
 ): Promise<PproTrackItem[]> {
   const seq = await freshSequence(project, guid);
   const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
-  return track.getTrackItems(clipTrackItemType(ppro), false);
+  // 実機知見: getTrackItemsはnull要素を含む配列を返すことがある（多数クリップ操作時に観測）
+  return track.getTrackItems(clipTrackItemType(ppro), false).filter((x) => x != null);
 }
 
 export async function scanTrack(
@@ -78,7 +79,7 @@ export async function scanTrack(
 ): Promise<LiveClip[]> {
   const seq = await freshSequence(project, guid);
   const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
-  const items = track.getTrackItems(clipTrackItemType(ppro), false);
+  const items = track.getTrackItems(clipTrackItemType(ppro), false).filter((x) => x != null);
   const out: LiveClip[] = [];
   for (const item of items) {
     const projectItem = await item.getProjectItem().catch(() => null);
@@ -349,18 +350,22 @@ export async function rebuildTrackSegments(
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (!seg) continue;
-    let tempPos = tempBase;
-    for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
-    const cloned = await cloneClipToTemp(
-      ppro, project, guid, kind, trackIndex, originalStartTicks, tempPos
-    );
-    log(`${kind} seg${i}: 複製OK（実位置 ${cloned.observedStartTicks}）`);
-    const trimmed = await setClipInOut(
-      ppro, project, guid, kind, trackIndex,
-      cloned.observedStartTicks, seg.sourceInTicks, seg.sourceOutTicks
-    );
-    log(`${kind} seg${i}: In/Out設定OK（実位置 ${trimmed.observedStartTicks}）`);
-    placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
+    try {
+      let tempPos = tempBase;
+      for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
+      const cloned = await cloneClipToTemp(
+        ppro, project, guid, kind, trackIndex, originalStartTicks, tempPos
+      );
+      log(`${kind} seg${i}/${segments.length}: 複製OK`);
+      const trimmed = await setClipInOut(
+        ppro, project, guid, kind, trackIndex,
+        cloned.observedStartTicks, seg.sourceInTicks, seg.sourceOutTicks
+      );
+      log(`${kind} seg${i}/${segments.length}: In/Out設定OK`);
+      placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
+    } catch (e) {
+      throw new Error(`${kind} seg${i}/${segments.length}で失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // 元クリップ削除 → 各Segmentを目的位置へ
@@ -369,7 +374,11 @@ export async function rebuildTrackSegments(
   for (let i = 0; i < placed.length; i++) {
     const p = placed[i];
     if (!p) continue;
-    await moveClipTo(ppro, project, guid, kind, trackIndex, p.startTicks, p.dest);
-    log(`${kind} seg${i}: 目的位置 ${p.dest} へ配置OK`);
+    try {
+      await moveClipTo(ppro, project, guid, kind, trackIndex, p.startTicks, p.dest);
+      log(`${kind} seg${i}/${placed.length}: 配置OK`);
+    } catch (e) {
+      throw new Error(`${kind} seg${i}の配置で失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
