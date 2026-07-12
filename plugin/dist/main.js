@@ -1902,7 +1902,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1143" : "dev";
+  var BUILD_ID = true ? "20260712T1147" : "dev";
   var bridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3e3);
   var bridgeIsMock = bridge instanceof MockNativeAdapter;
   function tryLoadPremiere() {
@@ -2322,7 +2322,10 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
       setControlsEnabled(true);
     }
   }
+  var initialized = false;
   function init() {
+    if (initialized) return;
+    initialized = true;
     const h1 = document.querySelector("h1");
     if (h1) {
       const span = document.createElement("span");
@@ -2332,6 +2335,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     }
     populatePresets();
     settingsToUi();
+    el("scopeSelect").value = "selection";
     void populateTracksFromPremiere();
     if (bridgeIsMock) {
       showBanner(

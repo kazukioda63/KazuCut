@@ -461,7 +461,13 @@ async function runMutatingProbeUi(): Promise<void> {
 }
 
 // ---- 初期化 ----
+let initialized = false;
+
 function init(): void {
+  // DOMContentLoadedとreadyState判定の両方から呼ばれても1回だけ実行する
+  if (initialized) return;
+  initialized = true;
+
   // ビルドIDをタイトル横へ常時表示（バージョン取り違え事故の防止）
   const h1 = document.querySelector("h1");
   if (h1) {
@@ -473,6 +479,8 @@ function init(): void {
 
   populatePresets();
   settingsToUi();
+  // UXPの<select>は明示的にvalueを設定しないと未選択表示になる
+  el<HTMLSelectElement>("scopeSelect").value = "selection";
   void populateTracksFromPremiere();
 
   if (bridgeIsMock) {

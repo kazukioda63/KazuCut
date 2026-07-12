@@ -28,6 +28,10 @@ target_include_directories(kazucut-native PRIVATE
     "${WORKER_THIRD_PARTY}"
 )
 target_compile_definitions(kazucut-native PRIVATE UNICODE _UNICODE NOMINMAX)
+if(MINGW)
+    # mingwランタイムDLL依存を除去（配布先にlibstdc++-6.dll等は無い）
+    target_link_options(kazucut-native PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 set_target_properties(kazucut-native PROPERTIES
     OUTPUT_NAME "kazucut-native"
     PREFIX ""
