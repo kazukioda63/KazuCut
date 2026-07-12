@@ -14,6 +14,7 @@ import { mergeCandidates } from "./analysis/candidateMerger";
 import { builtInPresets, validateSettings } from "./state/presets";
 import { defaultState, type StoredState } from "./state/settingsStore";
 import { runApiProbe } from "./premiere/apiProbe";
+import { runMutatingProbe } from "./premiere/mutatingProbe";
 import { msToTicks } from "./ticks";
 import type { AnalysisSettings, CutCandidate, NativeBridge, Preset } from "./types";
 
@@ -282,7 +283,7 @@ function setControlsEnabled(enabled: boolean): void {
   const ids = [
     "scopeSelect", "videoTrackSelect", "audioTrackSelect", "presetSelect",
     "silenceEnabled", "silenceMode", "retainMs", "fillerEnabled", "outputMode",
-    "analyzeButton", "applyButton", "probeButton"
+    "analyzeButton", "applyButton", "probeButton", "mutatingProbeButton"
   ];
   for (const id of ids) {
     const node = document.getElementById(id);
@@ -291,6 +292,19 @@ function setControlsEnabled(enabled: boolean): void {
 }
 
 // ---- API Probe ----
+async function saveDiagnostics(fileName: string, json: string): Promise<void> {
+  const uxpModule = (globalThis as { require?: (id: string) => unknown }).require?.("uxp") as {
+    storage?: { localFileSystem?: { getDataFolder?: () => Promise<unknown> } };
+  };
+  const dataFolder = (await uxpModule?.storage?.localFileSystem?.getDataFolder?.()) as {
+    createFile?: (name: string, opts: { overwrite: boolean }) => Promise<{
+      write: (data: string) => Promise<void>;
+    }>;
+  };
+  const file = await dataFolder?.createFile?.(fileName, { overwrite: true });
+  await file?.write(json);
+}
+
 async function runProbe(): Promise<void> {
   if (!ppro) {
     showBanner("Premiere未接続のためAPI Probeを実行できません。");
@@ -299,21 +313,46 @@ async function runProbe(): Promise<void> {
   const results = await runApiProbe(ppro, false);
   const json = JSON.stringify(results, null, 2);
   try {
-    const uxpModule = (globalThis as { require?: (id: string) => unknown }).require?.("uxp") as {
-      storage?: { localFileSystem?: { getDataFolder?: () => Promise<unknown> } };
-    };
-    const dataFolder = (await uxpModule?.storage?.localFileSystem?.getDataFolder?.()) as {
-      createFolder?: (name: string) => Promise<unknown>;
-      getEntry?: (name: string) => Promise<unknown>;
-      createFile?: (name: string, opts: { overwrite: boolean }) => Promise<{
-        write: (data: string) => Promise<void>;
-      }>;
-    };
-    const file = await dataFolder?.createFile?.("api-probe.json", { overwrite: true });
-    await file?.write(json);
+    await saveDiagnostics("api-probe.json", json);
     showBanner(`API Probe完了（${results.length}項目）。plugin-dataへ保存しました。`);
   } catch (e) {
     showBanner(`API Probe完了（${results.length}項目）。保存失敗: ${e instanceof Error ? e.message : String(e)}\n` + json.slice(0, 500));
+  }
+}
+
+async function runMutatingProbeUi(): Promise<void> {
+  if (!ppro) {
+    showBanner("Premiere未接続のため変更系Probeを実行できません。");
+    return;
+  }
+  if (running) return;
+  running = true;
+  setControlsEnabled(false);
+  showBanner(
+    "変更系Probeを実行中...\n" +
+    "アクティブシーケンスを複製し、複製上でClone/Move/In-Out/削除を実験します。\n" +
+    "元のシーケンスは変更しません（終了時に不変を自動検証します）。"
+  );
+  try {
+    const results = await runMutatingProbe(ppro as never);
+    const json = JSON.stringify(results, null, 2);
+    const okCount = results.filter((r) => r.succeeded).length;
+    const intact = results.find((r) => r.apiName === "元シーケンス不変検証");
+    try {
+      await saveDiagnostics("api-probe-mutating.json", json);
+      showBanner(
+        `変更系Probe完了: ${okCount}/${results.length}項目成功。\n` +
+        `元シーケンス: ${intact?.succeeded ? "不変を確認 ✓" : "⚠️ 要確認"}\n` +
+        "plugin-dataのapi-probe-mutating.jsonを共有してください。"
+      );
+    } catch {
+      showBanner(`変更系Probe完了（保存失敗のため先頭を表示）:\n` + json.slice(0, 800));
+    }
+  } catch (e) {
+    showBanner(`変更系Probeでエラー: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    running = false;
+    setControlsEnabled(true);
   }
 }
 
@@ -351,6 +390,9 @@ function init(): void {
   });
   el<HTMLButtonElement>("probeButton").addEventListener("click", () => {
     void runProbe();
+  });
+  el<HTMLButtonElement>("mutatingProbeButton").addEventListener("click", () => {
+    void runMutatingProbeUi();
   });
   $.applyButton().addEventListener("click", () => {
     showBanner("タイムライン適用はAPI Probe（Phase 2実機検証）完了後に有効化されます。");

@@ -3,9 +3,9 @@ export const PLUGIN_VERSION = "0.1.0";
 
 /**
  * Premiereのtick分解能（254,016,000,000 ticks/秒）。
- * 公式ドキュメントに明記が見つからないため、API Probe（TickTime.createWithSeconds(1).ticks）
- * で実機検証するまでは「表示・概算」にのみ使用し、編集位置の決定には使用しない。
- * 編集位置は常にTick文字列演算（ticks.ts）とTickTime APIで扱う。
+ * 2026-07-12 Premiere 26.3.0実機のAPI Probeで実測一致を確認済み
+ * （TickTime.createWithSeconds(1).ticks === "254016000000"、docs/api-probe.md）。
+ * 編集位置は引き続きTick文字列演算（ticks.ts）とTickTime APIで扱う。
  */
 export const ASSUMED_TICKS_PER_SECOND = "254016000000";
 

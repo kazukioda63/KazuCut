@@ -951,6 +951,247 @@
     return results;
   }
 
+  // plugin/src/premiere/pproTypes.ts
+  function clipTrackItemType(ppro2) {
+    const t = ppro2.Constants?.TrackItemType;
+    if (t) {
+      for (const key of ["CLIP", "Clip", "clip"]) {
+        const v = t[key];
+        if (typeof v === "number") return v;
+      }
+    }
+    return 1;
+  }
+
+  // plugin/src/premiere/mutatingProbe.ts
+  async function snapshotItem(item) {
+    return {
+      name: await item.getName(),
+      start: (await item.getStartTime()).ticks,
+      end: (await item.getEndTime()).ticks,
+      inPoint: (await item.getInPoint()).ticks,
+      outPoint: (await item.getOutPoint()).ticks
+    };
+  }
+  async function listAllItems(ppro2, seq) {
+    const out = [];
+    const clipType = clipTrackItemType(ppro2);
+    const vCount = await seq.getVideoTrackCount();
+    for (let i = 0; i < vCount; i++) {
+      const track = await seq.getVideoTrack(i);
+      out.push({ track, kind: "video", items: track.getTrackItems(clipType, false) });
+    }
+    const aCount = await seq.getAudioTrackCount();
+    for (let i = 0; i < aCount; i++) {
+      const track = await seq.getAudioTrack(i);
+      out.push({ track, kind: "audio", items: track.getTrackItems(clipType, false) });
+    }
+    return out;
+  }
+  async function snapshotSequence(ppro2, seq) {
+    const tracks = await listAllItems(ppro2, seq);
+    const parts = [];
+    for (const t of tracks) {
+      for (const item of t.items) {
+        const s = await snapshotItem(item);
+        parts.push(`${t.kind}:${s.name}:${s.start}-${s.end}:${s.inPoint}/${s.outPoint}`);
+      }
+    }
+    return parts.sort().join("|");
+  }
+  async function runMutatingProbe(ppro2) {
+    const results = [];
+    const push = (apiName, succeeded, notes, error) => {
+      const r = { apiName, available: succeeded, succeeded, notes };
+      if (error !== void 0) r.error = error;
+      results.push(r);
+    };
+    const project = await ppro2.Project.getActiveProject();
+    if (!project) {
+      push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8", false, [], "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
+      return results;
+    }
+    const original = await project.getActiveSequence();
+    if (!original) {
+      push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30B7\u30FC\u30B1\u30F3\u30B9", false, [], "\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u3042\u308A\u307E\u305B\u3093");
+      return results;
+    }
+    const originalSnapshotBefore = await snapshotSequence(ppro2, original);
+    const originalGuid = String(original.guid);
+    let clone = null;
+    try {
+      const before = await project.getSequences();
+      const beforeGuids = new Set(before.map((s) => String(s.guid)));
+      const executed = project.executeTransaction((compound) => {
+        compound.addAction(original.createCloneAction());
+      }, "KazuCut Probe: \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD");
+      const after = await project.getSequences();
+      const added = after.filter((s) => !beforeGuids.has(String(s.guid)));
+      if (added.length === 1 && added[0]) {
+        clone = added[0];
+        push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", true, [
+          `executeTransaction\u623B\u308A\u5024=${String(executed)}`,
+          `\u65B0\u898F\u30B7\u30FC\u30B1\u30F3\u30B91\u4EF6\u3092\u7279\u5B9A: name=${clone.name}`
+        ]);
+      } else {
+        push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", false, [
+          `\u65B0\u898F\u30B7\u30FC\u30B1\u30F3\u30B9\u304C${added.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`
+        ]);
+      }
+    } catch (e) {
+      push("sequence.createCloneAction + GUID\u5DEE\u5206\u7279\u5B9A", false, [], String(e));
+    }
+    if (clone) {
+      try {
+        const tracks = await listAllItems(ppro2, clone);
+        const withItems = tracks.filter((t) => t.items.length > 0);
+        push(
+          "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u306ETrackItem\u5217\u6319",
+          true,
+          withItems.map((t) => `${t.kind}[${t.track.name}]: ${t.items.length}\u4EF6`)
+        );
+        const videoTrack = tracks.find((t) => t.kind === "video" && t.items.length > 0);
+        const firstVideo = videoTrack?.items[0];
+        if (firstVideo && videoTrack) {
+          const editor = ppro2.SequenceEditor.getEditor(clone);
+          const seqEnd = (await clone.getEndTime()).ticks;
+          const vBefore = await snapshotItem(firstVideo);
+          try {
+            const audioCountBefore = (await listAllItems(ppro2, clone)).filter((t) => t.kind === "audio").reduce((n, t) => n + t.items.length, 0);
+            const videoCountBefore = (await listAllItems(ppro2, clone)).filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
+            const offsetTicks = subtractTicks(
+              subtractTicks(seqEnd, vBefore.start),
+              "-2540160000000"
+              // +10秒
+            );
+            const offsetT = ppro2.TickTime.createWithTicks(offsetTicks);
+            project.executeTransaction((compound) => {
+              compound.addAction(
+                editor.createCloneTrackItemAction(firstVideo, offsetT, 0, 0, true, false)
+              );
+            }, "KazuCut Probe: TrackItem Clone");
+            const afterClone = await listAllItems(ppro2, clone);
+            const videoCountAfter = afterClone.filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
+            const audioCountAfter = afterClone.filter((t) => t.kind === "audio").reduce((n, t) => n + t.items.length, 0);
+            const videoAdded = videoCountAfter - videoCountBefore;
+            const audioAdded = audioCountAfter - audioCountBefore;
+            push("SequenceEditor.createCloneTrackItemAction(isInsert=false)", videoAdded === 1, [
+              `\u65B0\u898FVideo TrackItem: ${videoAdded}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`,
+              `\u65B0\u898FAudio TrackItem: ${audioAdded}\u4EF6 \u2192 \u30EA\u30F3\u30AFAudio${audioAdded > 0 ? "\u3082\u540C\u6642\u8907\u88FD\u3055\u308C\u308B" : "\u306F\u8907\u88FD\u3055\u308C\u306A\u3044"}`,
+              `timeOffset\u306F\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8\u3068\u3057\u3066\u6E21\u3057\u305F`
+            ]);
+            const vTrackNow = afterClone.find(
+              (t) => t.kind === "video" && t.track.name === videoTrack.track.name
+            );
+            const newItems = [];
+            if (vTrackNow) {
+              for (const item of vTrackNow.items) {
+                const s = await snapshotItem(item);
+                if (s.start !== vBefore.start) newItems.push(item);
+              }
+            }
+            const cloned = newItems[0];
+            if (cloned) {
+              const clonedBefore = await snapshotItem(cloned);
+              try {
+                const target = "2540160000000";
+                project.executeTransaction((compound) => {
+                  compound.addAction(
+                    cloned.createMoveAction(ppro2.TickTime.createWithTicks(target))
+                  );
+                }, "KazuCut Probe: Move");
+                const moved = await snapshotItem(cloned);
+                let semantics = "\u4E0D\u660E";
+                if (moved.start === target) semantics = "\u7D76\u5BFE\u4F4D\u7F6E";
+                else {
+                  const expectOffset = subtractTicks(moved.start, clonedBefore.start);
+                  semantics = `\u76F8\u5BFE\u30AA\u30D5\u30BB\u30C3\u30C8?\uFF08\u79FB\u52D5\u91CF=${expectOffset}\uFF09`;
+                }
+                push("trackItem.createMoveAction", true, [
+                  `\u79FB\u52D5\u524Dstart=${clonedBefore.start}`,
+                  `\u6307\u5B9A\u5024=${target}`,
+                  `\u79FB\u52D5\u5F8Cstart=${moved.start}`,
+                  `\u30BB\u30DE\u30F3\u30C6\u30A3\u30AF\u30B9\u5224\u5B9A: ${semantics}`
+                ]);
+              } catch (e) {
+                push("trackItem.createMoveAction", false, [], String(e));
+              }
+              try {
+                const newIn = subtractTicks(clonedBefore.inPoint, "-127008000000");
+                project.executeTransaction((compound) => {
+                  compound.addAction(
+                    cloned.createSetInPointAction(ppro2.TickTime.createWithTicks(newIn))
+                  );
+                }, "KazuCut Probe: SetInPoint");
+                const afterIn = await snapshotItem(cloned);
+                push("trackItem.createSetInPointAction", true, [
+                  `inPoint: ${clonedBefore.inPoint} \u2192 ${afterIn.inPoint}\uFF08\u671F\u5F85${newIn}\uFF09`,
+                  `start: ${clonedBefore.start} \u2192 ${afterIn.start}`,
+                  `end: ${clonedBefore.end} \u2192 ${afterIn.end}`
+                ]);
+              } catch (e) {
+                push("trackItem.createSetInPointAction", false, [], String(e));
+              }
+              try {
+                const selection = await clone.getSelection();
+                const existing = await selection.getTrackItems();
+                for (const it of existing) selection.removeItem(it);
+                selection.addItem(cloned, true);
+                const othersBefore = await snapshotSequence(ppro2, clone);
+                project.executeTransaction((compound) => {
+                  compound.addAction(
+                    editor.createRemoveItemsAction(selection, false, void 0, false)
+                  );
+                }, "KazuCut Probe: Remove");
+                const afterRemove = await listAllItems(ppro2, clone);
+                const vCountFinal = afterRemove.filter((t) => t.kind === "video").reduce((n, t) => n + t.items.length, 0);
+                push("SequenceEditor.createRemoveItemsAction(ripple=false)", true, [
+                  `\u524A\u9664\u5F8CVideo\u4EF6\u6570=${vCountFinal}\uFF08\u671F\u5F85${videoCountBefore}\uFF09`,
+                  othersBefore.length > 0 ? "\u524A\u9664\u524D\u30B9\u30CA\u30C3\u30D7\u30B7\u30E7\u30C3\u30C8\u53D6\u5F97\u6E08\u307F" : ""
+                ]);
+              } catch (e) {
+                push("SequenceEditor.createRemoveItemsAction", false, [], String(e));
+              }
+            } else {
+              push("Clone\u5F8C\u306E\u65B0\u898FTrackItem\u7279\u5B9A", false, ["start\u306E\u5DEE\u5206\u3067\u7279\u5B9A\u3067\u304D\u305A"]);
+            }
+          } catch (e) {
+            push("SequenceEditor.createCloneTrackItemAction", false, [], String(e));
+          }
+        } else {
+          push("\u8907\u88FD\u4E0A\u306EVideo\u30AF\u30EA\u30C3\u30D7", false, ["Video\u30AF\u30EA\u30C3\u30D7\u304C1\u3064\u3082\u3042\u308A\u307E\u305B\u3093\u3002\u30AF\u30EA\u30C3\u30D7\u306E\u3042\u308B\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044"]);
+        }
+      } catch (e) {
+        push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0A\u306E\u5B9F\u9A13", false, [], String(e));
+      }
+      try {
+        const deleted = await project.deleteSequence(clone);
+        push("project.deleteSequence(\u8907\u88FD\u306E\u5F8C\u59CB\u672B)", deleted === true, [
+          `\u623B\u308A\u5024=${String(deleted)}`
+        ]);
+      } catch (e) {
+        push("project.deleteSequence", false, [
+          "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u6B8B\u3063\u3066\u3044\u307E\u3059\u3002\u624B\u52D5\u3067\u524A\u9664\u3057\u3066\u304F\u3060\u3055\u3044"
+        ], String(e));
+      }
+    }
+    try {
+      const originalAfter = await project.getSequences();
+      const stillThere = originalAfter.some((s) => String(s.guid) === originalGuid);
+      const snapshotAfter = stillThere ? await snapshotSequence(
+        ppro2,
+        originalAfter.find((s) => String(s.guid) === originalGuid) ?? original
+      ) : "";
+      const intact = stillThere && snapshotAfter === originalSnapshotBefore;
+      push("\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", intact, [
+        intact ? "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306E\u5168TrackItem\u304C\u5909\u66F4\u3055\u308C\u3066\u3044\u306A\u3044\u3053\u3068\u3092\u78BA\u8A8D" : "\u26A0\uFE0F \u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306B\u5DEE\u5206\u304C\u3042\u308A\u307E\u3059\u3002Undo(Ctrl+Z)\u3067\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044"
+      ]);
+    } catch (e) {
+      push("\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", false, [], String(e));
+    }
+    return results;
+  }
+
   // plugin/src/main.ts
   var bridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3e3);
   var bridgeIsMock = bridge instanceof MockNativeAdapter;
@@ -1217,12 +1458,19 @@
       "outputMode",
       "analyzeButton",
       "applyButton",
-      "probeButton"
+      "probeButton",
+      "mutatingProbeButton"
     ];
     for (const id of ids) {
       const node = document.getElementById(id);
       if (node) node.disabled = !enabled;
     }
+  }
+  async function saveDiagnostics(fileName, json) {
+    const uxpModule = globalThis.require?.("uxp");
+    const dataFolder = await uxpModule?.storage?.localFileSystem?.getDataFolder?.();
+    const file = await dataFolder?.createFile?.(fileName, { overwrite: true });
+    await file?.write(json);
   }
   async function runProbe() {
     if (!ppro) {
@@ -1232,14 +1480,45 @@
     const results = await runApiProbe(ppro, false);
     const json = JSON.stringify(results, null, 2);
     try {
-      const uxpModule = globalThis.require?.("uxp");
-      const dataFolder = await uxpModule?.storage?.localFileSystem?.getDataFolder?.();
-      const file = await dataFolder?.createFile?.("api-probe.json", { overwrite: true });
-      await file?.write(json);
+      await saveDiagnostics("api-probe.json", json);
       showBanner(`API Probe\u5B8C\u4E86\uFF08${results.length}\u9805\u76EE\uFF09\u3002plugin-data\u3078\u4FDD\u5B58\u3057\u307E\u3057\u305F\u3002`);
     } catch (e) {
       showBanner(`API Probe\u5B8C\u4E86\uFF08${results.length}\u9805\u76EE\uFF09\u3002\u4FDD\u5B58\u5931\u6557: ${e instanceof Error ? e.message : String(e)}
 ` + json.slice(0, 500));
+    }
+  }
+  async function runMutatingProbeUi() {
+    if (!ppro) {
+      showBanner("Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u5909\u66F4\u7CFBProbe\u3092\u5B9F\u884C\u3067\u304D\u307E\u305B\u3093\u3002");
+      return;
+    }
+    if (running) return;
+    running = true;
+    setControlsEnabled(false);
+    showBanner(
+      "\u5909\u66F4\u7CFBProbe\u3092\u5B9F\u884C\u4E2D...\n\u30A2\u30AF\u30C6\u30A3\u30D6\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u8907\u88FD\u3057\u3001\u8907\u88FD\u4E0A\u3067Clone/Move/In-Out/\u524A\u9664\u3092\u5B9F\u9A13\u3057\u307E\u3059\u3002\n\u5143\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u306F\u5909\u66F4\u3057\u307E\u305B\u3093\uFF08\u7D42\u4E86\u6642\u306B\u4E0D\u5909\u3092\u81EA\u52D5\u691C\u8A3C\u3057\u307E\u3059\uFF09\u3002"
+    );
+    try {
+      const results = await runMutatingProbe(ppro);
+      const json = JSON.stringify(results, null, 2);
+      const okCount = results.filter((r) => r.succeeded).length;
+      const intact = results.find((r) => r.apiName === "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C");
+      try {
+        await saveDiagnostics("api-probe-mutating.json", json);
+        showBanner(
+          `\u5909\u66F4\u7CFBProbe\u5B8C\u4E86: ${okCount}/${results.length}\u9805\u76EE\u6210\u529F\u3002
+\u5143\u30B7\u30FC\u30B1\u30F3\u30B9: ${intact?.succeeded ? "\u4E0D\u5909\u3092\u78BA\u8A8D \u2713" : "\u26A0\uFE0F \u8981\u78BA\u8A8D"}
+plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+        );
+      } catch {
+        showBanner(`\u5909\u66F4\u7CFBProbe\u5B8C\u4E86\uFF08\u4FDD\u5B58\u5931\u6557\u306E\u305F\u3081\u5148\u982D\u3092\u8868\u793A\uFF09:
+` + json.slice(0, 800));
+      }
+    } catch (e) {
+      showBanner(`\u5909\u66F4\u7CFBProbe\u3067\u30A8\u30E9\u30FC: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      running = false;
+      setControlsEnabled(true);
     }
   }
   function init() {
@@ -1270,6 +1549,9 @@
     });
     el("probeButton").addEventListener("click", () => {
       void runProbe();
+    });
+    el("mutatingProbeButton").addEventListener("click", () => {
+      void runMutatingProbeUi();
     });
     $.applyButton().addEventListener("click", () => {
       showBanner("\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u9069\u7528\u306FAPI Probe\uFF08Phase 2\u5B9F\u6A5F\u691C\u8A3C\uFF09\u5B8C\u4E86\u5F8C\u306B\u6709\u52B9\u5316\u3055\u308C\u307E\u3059\u3002");
