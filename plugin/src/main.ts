@@ -18,6 +18,10 @@ import { runMutatingProbe } from "./premiere/mutatingProbe";
 import { msToTicks } from "./ticks";
 import type { AnalysisSettings, CutCandidate, NativeBridge, Preset } from "./types";
 
+// ビルド時にesbuildが注入（scripts/build-uxp.mjs）
+declare const __KAZUCUT_BUILD__: string;
+const BUILD_ID = typeof __KAZUCUT_BUILD__ === "string" ? __KAZUCUT_BUILD__ : "dev";
+
 // ---- 環境検出 ----
 const bridge: NativeBridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3000);
 const bridgeIsMock = bridge instanceof MockNativeAdapter;
@@ -341,6 +345,12 @@ async function runMutatingProbeUi(): Promise<void> {
   );
   try {
     const results = await runMutatingProbe(ppro as never);
+    results.unshift({
+      apiName: "probeVersion",
+      available: true,
+      succeeded: true,
+      notes: [`build ${BUILD_ID}`]
+    });
     const json = JSON.stringify(results, null, 2);
     const okCount = results.filter((r) => r.succeeded).length;
     const intact = results.find((r) => r.apiName === "元シーケンス不変検証");
@@ -364,6 +374,15 @@ async function runMutatingProbeUi(): Promise<void> {
 
 // ---- 初期化 ----
 function init(): void {
+  // ビルドIDをタイトル横へ常時表示（バージョン取り違え事故の防止）
+  const h1 = document.querySelector("h1");
+  if (h1) {
+    const span = document.createElement("span");
+    span.style.cssText = "font-size:10px;color:#888;margin-left:8px;font-weight:normal;";
+    span.textContent = `build ${BUILD_ID}`;
+    h1.appendChild(span);
+  }
+
   populatePresets();
   settingsToUi();
 

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+const buildId = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13); // 例: 20260712T0930
+
 await build({
   entryPoints: [join(root, "plugin/src/main.ts")],
   outfile: join(root, "plugin/dist/main.js"),
@@ -14,8 +16,10 @@ await build({
   target: "es2022",
   // UXPのrequire("premierepro")等は実行時解決
   external: ["premierepro", "uxp", "kazucut-native.uxpaddon"],
+  define: { __KAZUCUT_BUILD__: JSON.stringify(buildId) },
   logLevel: "info"
 });
+console.log(`BUILD_ID: ${buildId}`);
 
 // アイコンのプレースホルダ（実配布時に差し替え）
 const iconDir = join(root, "plugin/icons");

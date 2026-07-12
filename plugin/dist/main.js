@@ -1289,6 +1289,7 @@
   }
 
   // plugin/src/main.ts
+  var BUILD_ID = true ? "20260712T1136" : "dev";
   var bridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3e3);
   var bridgeIsMock = bridge instanceof MockNativeAdapter;
   function tryLoadPremiere() {
@@ -1600,6 +1601,12 @@
     );
     try {
       const results = await runMutatingProbe(ppro);
+      results.unshift({
+        apiName: "probeVersion",
+        available: true,
+        succeeded: true,
+        notes: [`build ${BUILD_ID}`]
+      });
       const json = JSON.stringify(results, null, 2);
       const okCount = results.filter((r) => r.succeeded).length;
       const intact = results.find((r) => r.apiName === "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C");
@@ -1622,6 +1629,13 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     }
   }
   function init() {
+    const h1 = document.querySelector("h1");
+    if (h1) {
+      const span = document.createElement("span");
+      span.style.cssText = "font-size:10px;color:#888;margin-left:8px;font-weight:normal;";
+      span.textContent = `build ${BUILD_ID}`;
+      h1.appendChild(span);
+    }
     populatePresets();
     settingsToUi();
     if (bridgeIsMock) {
