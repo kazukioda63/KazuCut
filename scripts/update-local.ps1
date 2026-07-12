@@ -65,20 +65,34 @@ $files = @(
     @{ url = "$base/plugin/win/x64/KazuCutWorker.exe";       dest = "$found\plugin\win\x64\KazuCutWorker.exe" }
 )
 $failed = $false
+$lockedBinaries = @()
 foreach ($f in $files) {
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path $f.dest) | Out-Null
         Invoke-WebRequest -Uri $f.url -OutFile $f.dest -ErrorAction Stop
         Write-Host "更新: $($f.dest)"
     } catch {
-        Write-Host "失敗: $($f.dest) — $($_.Exception.Message)" -ForegroundColor Red
-        $failed = $true
+        $isBinary = $f.dest -match "\\win\\x64\\"
+        $isLocked = $_.Exception.Message -match "別のプロセス|being used by another process"
+        if ($isBinary -and $isLocked) {
+            # Premiere起動中はネイティブバイナリを上書きできない。
+            # バイナリに変更がないリリースでは問題ないため警告扱いにする
+            Write-Host "スキップ: $($f.dest)（Premiere起動中のためロック）" -ForegroundColor Yellow
+            $lockedBinaries += (Split-Path $f.dest -Leaf)
+        } else {
+            Write-Host "失敗: $($f.dest) — $($_.Exception.Message)" -ForegroundColor Red
+            $failed = $true
+        }
     }
 }
 if ($failed) {
     Write-Host "`n一部のファイルを更新できませんでした。上の赤いメッセージを報告してください。" -ForegroundColor Red
     try { Stop-Transcript | Out-Null } catch { }
     return
+}
+if ($lockedBinaries.Count -gt 0) {
+    Write-Host "`n注意: $($lockedBinaries -join ', ') はPremiere起動中のため更新されていません。" -ForegroundColor Yellow
+    Write-Host "「バイナリも更新して」と指示された場合はPremiereを終了して再実行してください。" -ForegroundColor Yellow
 }
 
 $match = Select-String -Path "$found\plugin\dist\main.js" -Pattern '\d{8}T\d{4}' | Select-Object -First 1
