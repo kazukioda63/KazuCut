@@ -1592,6 +1592,28 @@
     if (v === void 0) throw new Error("Constants.MediaType\u304C\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
     return v;
   }
+  async function moveClipTo(ppro2, project, guid, kind, trackIndex, currentStartTicks, destStartTicks) {
+    if (compareTicks(currentStartTicks, destStartTicks) === 0) return;
+    const item = await resolveItem(
+      ppro2,
+      project,
+      guid,
+      kind,
+      trackIndex,
+      (c) => c.start === currentStartTicks,
+      "Move\u5BFE\u8C61"
+    );
+    const delta = subtractTicks(destStartTicks, currentStartTicks);
+    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u79FB\u52D5", () => [
+      item.createMoveAction(ppro2.TickTime.createWithTicks(delta))
+    ]);
+    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
+    if (!after.some((c) => c.startTicks === destStartTicks)) {
+      throw new Error(
+        `Move\u7740\u5730\u691C\u8A3C\u5931\u6557: ${destStartTicks} \u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093\uFF08\u5B9F\u4F4D\u7F6E: ${after.map((c) => c.startTicks).join(",")}\uFF09`
+      );
+    }
+  }
   async function removeClipAt(ppro2, project, guid, kind, trackIndex, startTicks) {
     const item = await resolveItem(
       ppro2,
@@ -1987,6 +2009,34 @@
     return parts.sort().join("|");
   }
 
+  // plugin/src/analysis/editPlanBuilder.ts
+  function buildEditPlan(clips, candidates2) {
+    const sorted = [...clips].sort(
+      (a, b) => compareTicks(a.sequenceStartTicks, b.sequenceStartTicks)
+    );
+    const plans = [];
+    let cumulativeRemoved = "0";
+    for (const clip of sorted) {
+      const shiftedClip = {
+        ...clip,
+        sequenceStartTicks: subtractTicks(clip.sequenceStartTicks, cumulativeRemoved)
+      };
+      const segments = planKeepSegments(shiftedClip, candidates2);
+      const clipDuration = subtractTicks(clip.sourceOutTicks, clip.sourceInTicks);
+      const kept = segments.reduce(
+        (acc, s) => addTicks(acc, s.durationTicks),
+        "0"
+      );
+      const removed = subtractTicks(clipDuration, kept);
+      if (compareTicks(removed, "0") < 0) {
+        throw new Error(`\u30AF\u30EA\u30C3\u30D7${clip.clipId}: \u4FDD\u6301\u6642\u9593\u304C\u5143\u306E\u9577\u3055\u3092\u8D85\u3048\u3066\u3044\u307E\u3059`);
+      }
+      plans.push({ clipId: clip.clipId, keepSegments: segments, removedTicks: removed });
+      cumulativeRemoved = addTicks(cumulativeRemoved, removed);
+    }
+    return { clips: plans, totalRemovedTicks: cumulativeRemoved };
+  }
+
   // plugin/src/premiere/realAnalysis.ts
   function toClipInfo2(c, id, offline) {
     return {
@@ -2017,133 +2067,207 @@
     }
     return Math.min(sil.retainMs, durationMs);
   }
-  async function runRealAnalysis(ppro2, bridge2, settings, videoTrackIndex, audioTrackIndex, onProgress, signal) {
+  async function mediaInfoForClip(ppro2, project, guid, videoTrackIndex, startTicks) {
+    const seqFresh = await freshSequence2(project, guid);
+    const track = await seqFresh.getVideoTrack(videoTrackIndex);
+    const items = track.getTrackItems(clipTrackItemType(ppro2), false).filter((x) => x != null);
+    for (const item of items) {
+      const start = (await item.getStartTime()).ticks;
+      if (start !== startTicks) continue;
+      const projectItem = await item.getProjectItem();
+      const clipItem = ppro2.ClipProjectItem.cast(projectItem);
+      const mediaPath = await clipItem.getMediaFilePath();
+      const offline = await clipItem.isOffline().catch(() => false);
+      return { mediaPath, offline };
+    }
+    throw new Error(`\u30AF\u30EA\u30C3\u30D7(start=${startTicks})\u3092\u518D\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093`);
+  }
+  async function selectedStarts(project, guid) {
+    const seq = await freshSequence2(project, guid);
+    const selection = await seq.getSelection();
+    const items = await selection.getTrackItems();
+    const starts = /* @__PURE__ */ new Set();
+    for (const item of items) {
+      if (!item) continue;
+      try {
+        starts.add((await item.getStartTime()).ticks);
+      } catch {
+      }
+    }
+    return starts;
+  }
+  async function runRealAnalysis(ppro2, bridge2, settings, videoTrackIndex, audioTrackIndex, scope, onProgress, signal) {
     const project = await ppro2.Project.getActiveProject();
     if (!project) return { ok: false, error: createError("NO_ACTIVE_PROJECT", "") };
     const seq = await project.getActiveSequence();
     if (!seq) return { ok: false, error: createError("NO_ACTIVE_SEQUENCE", "") };
     const guid = String(seq.guid);
-    const vClips = await scanTrack(ppro2, project, guid, "video", videoTrackIndex);
+    const vClips = (await scanTrack(ppro2, project, guid, "video", videoTrackIndex)).sort(
+      (a, b) => compareTicks(a.startTicks, b.startTicks)
+    );
     if (vClips.length === 0) {
       return {
         ok: false,
         error: createError("NO_SELECTED_CLIP", `V${videoTrackIndex + 1}\u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093`)
       };
     }
-    const vLive = vClips[0];
-    if (!vLive) return { ok: false, error: createError("NO_SELECTED_CLIP", "") };
-    let mediaPath = "";
-    let offline = false;
-    try {
-      const seqFresh = await freshSequence2(project, guid);
-      const track = await seqFresh.getVideoTrack(videoTrackIndex);
-      const items = track.getTrackItems(clipTrackItemType(ppro2), false).filter((x) => x != null);
-      const item = items[0];
-      if (!item) throw new Error("TrackItem\u518D\u53D6\u5F97\u5931\u6557");
-      const projectItem = await item.getProjectItem();
-      const clipItem = ppro2.ClipProjectItem.cast(projectItem);
-      mediaPath = await clipItem.getMediaFilePath();
-      offline = await clipItem.isOffline().catch(() => false);
-    } catch (e) {
-      return {
-        ok: false,
-        error: createError("MEDIA_NOT_FOUND", `\u30E1\u30C7\u30A3\u30A2\u30D1\u30B9\u53D6\u5F97\u5931\u6557: ${String(e)}`)
-      };
-    }
-    if (offline) return { ok: false, error: createError("MEDIA_OFFLINE", mediaPath) };
-    if (!mediaPath) return { ok: false, error: createError("MEDIA_NOT_FOUND", "\u30D1\u30B9\u304C\u7A7A\u3067\u3059") };
-    const video = toClipInfo2(vLive, "v0", offline);
     const aClips = await scanTrack(ppro2, project, guid, "audio", audioTrackIndex);
-    const pair = resolveAvPair(
-      video,
-      aClips.map((c, i) => toClipInfo2(c, `a${i}`, false)),
-      audioTrackIndex
-    );
-    if (!pair.ok) return { ok: false, error: pair.error };
-    const request = buildJobRequest(
-      {
-        jobId: `analyze-${Date.now()}`,
-        mediaPath,
-        sourceInTicks: video.inTicks,
-        sourceOutTicks: video.outTicks,
-        audioStreamIndex: 0
-      },
-      settings,
-      null
-    );
-    const jobId = bridge2.startJob(JSON.stringify({ type: "analyze", ...request }));
-    if (jobId.startsWith("{")) {
-      try {
-        const err = JSON.parse(jobId);
+    const audioInfos = aClips.map((c, i) => toClipInfo2(c, `a${i}`, false));
+    let analyzedStarts;
+    if (scope === "selection") {
+      analyzedStarts = await selectedStarts(project, guid);
+      const hit = vClips.some((c) => analyzedStarts.has(c.startTicks));
+      if (!hit) {
         return {
           ok: false,
-          error: createError(err.error?.code ?? "WORKER_START_FAILED", err.error?.developerMessage ?? jobId)
+          error: createError(
+            "NO_SELECTED_CLIP",
+            "\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u3067\u30AF\u30EA\u30C3\u30D7\u304C\u9078\u629E\u3055\u308C\u3066\u3044\u307E\u305B\u3093\uFF08\u5BFE\u8C61\u3092\u300CA\u30ED\u30FC\u30EB\u30C8\u30E9\u30C3\u30AF\u5168\u4F53\u300D\u306B\u3059\u308B\u3068\u5168\u30AF\u30EA\u30C3\u30D7\u3092\u51E6\u7406\u3057\u307E\u3059\uFF09"
+          )
         };
-      } catch {
-        return { ok: false, error: createError("WORKER_START_FAILED", jobId) };
       }
+    } else {
+      analyzedStarts = new Set(vClips.map((c) => c.startTicks));
     }
-    const status = await pollJob(bridge2, jobId, { intervalMs: 150, signal, onProgress });
-    if (status.state === "cancelled") {
+    const clips = [];
+    for (let k = 0; k < vClips.length; k++) {
+      const vLive = vClips[k];
+      if (!vLive) continue;
+      const clipId = `clip${k}`;
+      const video = toClipInfo2(vLive, clipId, false);
+      const pair = resolveAvPair(video, audioInfos, audioTrackIndex);
+      if (!pair.ok) {
+        return {
+          ok: false,
+          error: {
+            ...pair.error,
+            userMessage: `${k + 1}\u756A\u76EE\u306E\u30AF\u30EA\u30C3\u30D7: ${pair.error.userMessage}`
+          }
+        };
+      }
+      const analyzed = analyzedStarts.has(vLive.startTicks);
+      let mediaPath = "";
+      if (analyzed) {
+        try {
+          const info = await mediaInfoForClip(ppro2, project, guid, videoTrackIndex, vLive.startTicks);
+          if (info.offline) {
+            return { ok: false, error: createError("MEDIA_OFFLINE", info.mediaPath) };
+          }
+          mediaPath = info.mediaPath;
+          if (!mediaPath) {
+            return { ok: false, error: createError("MEDIA_NOT_FOUND", `clip${k}: \u30D1\u30B9\u304C\u7A7A\u3067\u3059`) };
+          }
+        } catch (e) {
+          return { ok: false, error: createError("MEDIA_NOT_FOUND", String(e)) };
+        }
+      }
+      clips.push({
+        clipId,
+        videoStartTicks: vLive.startTicks,
+        videoInTicks: vLive.inTicks,
+        videoOutTicks: vLive.outTicks,
+        audioStartTicks: pair.audio.startTicks,
+        analyzed,
+        mediaPath
+      });
+    }
+    const analyzedClips = clips.filter((c) => c.analyzed);
+    const allCandidates = [];
+    let noiseFloorDb = -60;
+    let thresholdDb = -50;
+    for (let idx = 0; idx < analyzedClips.length; idx++) {
+      const clip = analyzedClips[idx];
+      if (!clip) continue;
+      const request = buildJobRequest(
+        {
+          jobId: `analyze-${Date.now()}-${idx}`,
+          mediaPath: clip.mediaPath,
+          sourceInTicks: clip.videoInTicks,
+          sourceOutTicks: clip.videoOutTicks,
+          audioStreamIndex: 0
+        },
+        settings,
+        null
+      );
+      const jobId = bridge2.startJob(JSON.stringify({ type: "analyze", ...request }));
+      if (jobId.startsWith("{")) {
+        try {
+          const err = JSON.parse(jobId);
+          return {
+            ok: false,
+            error: createError(err.error?.code ?? "WORKER_START_FAILED", err.error?.developerMessage ?? jobId)
+          };
+        } catch {
+          return { ok: false, error: createError("WORKER_START_FAILED", jobId) };
+        }
+      }
+      const status = await pollJob(bridge2, jobId, {
+        intervalMs: 150,
+        signal,
+        onProgress: (st) => onProgress({
+          ...st,
+          progress: (idx + st.progress) / analyzedClips.length
+        })
+      });
+      if (status.state === "cancelled") {
+        bridge2.disposeJob(jobId);
+        return { ok: false, error: createError("CANCELLED", "") };
+      }
+      if (status.state !== "completed") {
+        bridge2.disposeJob(jobId);
+        return {
+          ok: false,
+          error: status.error ?? createError("WORKER_CRASHED", `state=${status.state}`)
+        };
+      }
+      let silence;
+      try {
+        const result = JSON.parse(bridge2.getJobResult(jobId));
+        if (!result.silence) throw new Error("silence\u30BB\u30AF\u30B7\u30E7\u30F3\u304C\u3042\u308A\u307E\u305B\u3093");
+        silence = result.silence;
+      } catch (e) {
+        bridge2.disposeJob(jobId);
+        return { ok: false, error: createError("WORKER_PROTOCOL_ERROR", String(e)) };
+      }
       bridge2.disposeJob(jobId);
-      return { ok: false, error: createError("CANCELLED", "") };
+      noiseFloorDb = silence.noiseFloorDb;
+      thresholdDb = silence.thresholdDb;
+      const raw = silence.intervals.map((iv, i) => {
+        const durationMs = iv.endMs - iv.startMs;
+        const retained = retainedMsFor(durationMs, settings);
+        return {
+          id: `${clip.clipId}-sil-${i}`,
+          reason: "silence",
+          clipId: clip.clipId,
+          sourceStartTicks: addTicks(clip.videoInTicks, msToTicks(iv.startMs)),
+          sourceEndTicks: addTicks(clip.videoInTicks, msToTicks(iv.endMs)),
+          sequenceStartTicks: addTicks(clip.videoStartTicks, msToTicks(iv.startMs)),
+          sequenceEndTicks: addTicks(clip.videoStartTicks, msToTicks(iv.endMs)),
+          originalDurationMs: durationMs,
+          retainedDurationMs: retained,
+          removalDurationMs: Math.max(durationMs - retained, 0),
+          selected: durationMs - retained > 0,
+          warnings: [],
+          metadata: { noiseFloorDb: silence.noiseFloorDb }
+        };
+      });
+      const merged = mergeCandidates(raw, {
+        mergeGapMs: settings.silence.mergeGapMs,
+        minSpeechMs: settings.silence.minSpeechMs
+      }).filter((c) => c.removalDurationMs > 0);
+      allCandidates.push(...merged);
     }
-    if (status.state !== "completed") {
-      bridge2.disposeJob(jobId);
-      return {
-        ok: false,
-        error: status.error ?? createError("WORKER_CRASHED", `state=${status.state}`)
-      };
-    }
-    let silence;
-    try {
-      const result = JSON.parse(bridge2.getJobResult(jobId));
-      if (!result.silence) throw new Error("silence\u30BB\u30AF\u30B7\u30E7\u30F3\u304C\u3042\u308A\u307E\u305B\u3093");
-      silence = result.silence;
-    } catch (e) {
-      bridge2.disposeJob(jobId);
-      return { ok: false, error: createError("WORKER_PROTOCOL_ERROR", String(e)) };
-    }
-    bridge2.disposeJob(jobId);
-    const rawCandidates = silence.intervals.map((iv, i) => {
-      const durationMs = iv.endMs - iv.startMs;
-      const retained = retainedMsFor(durationMs, settings);
-      const srcStart = addTicks(video.inTicks, msToTicks(iv.startMs));
-      const srcEnd = addTicks(video.inTicks, msToTicks(iv.endMs));
-      return {
-        id: `sil-${i}`,
-        reason: "silence",
-        clipId: "v0",
-        sourceStartTicks: srcStart,
-        sourceEndTicks: srcEnd,
-        sequenceStartTicks: addTicks(video.startTicks, msToTicks(iv.startMs)),
-        sequenceEndTicks: addTicks(video.startTicks, msToTicks(iv.endMs)),
-        originalDurationMs: durationMs,
-        retainedDurationMs: retained,
-        removalDurationMs: Math.max(durationMs - retained, 0),
-        selected: durationMs - retained > 0,
-        warnings: [],
-        metadata: { noiseFloorDb: silence.noiseFloorDb }
-      };
-    });
-    const candidates2 = mergeCandidates(rawCandidates, {
-      mergeGapMs: settings.silence.mergeGapMs,
-      minSpeechMs: settings.silence.minSpeechMs
-    }).filter((c) => c.removalDurationMs > 0);
+    allCandidates.sort((a, b) => compareTicks(a.sequenceStartTicks, b.sequenceStartTicks));
     return {
       ok: true,
-      candidates: candidates2,
+      candidates: allCandidates,
       context: {
         sequenceGuid: guid,
         videoTrackIndex,
         audioTrackIndex,
-        videoStartTicks: video.startTicks,
-        videoInTicks: video.inTicks,
-        videoOutTicks: video.outTicks,
-        audioStartTicks: pair.audio.startTicks,
-        mediaPath,
-        noiseFloorDb: silence.noiseFloorDb,
-        thresholdDb: silence.thresholdDb
+        clips,
+        noiseFloorDb,
+        thresholdDb
       }
     };
   }
@@ -2169,47 +2293,82 @@
     }
     const targetGuid = context.sequenceGuid;
     try {
-      const vClips = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
-      const aClips = await scanTrack(ppro2, project, targetGuid, "audio", context.audioTrackIndex);
-      const v = vClips.find(
-        (c) => c.inTicks === context.videoInTicks && c.outTicks === context.videoOutTicks
-      );
-      const a = aClips.find((c) => c.startTicks === v?.startTicks);
-      if (!v || !a) {
-        push("\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u518D\u89E3\u6C7A", false, [
-          "\u89E3\u6790\u5F8C\u306B\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u304C\u5909\u66F4\u3055\u308C\u305F\u3088\u3046\u3067\u3059\u3002\u300C\u89E3\u6790\u3059\u308B\u300D\u304B\u3089\u3084\u308A\u76F4\u3057\u3066\u304F\u3060\u3055\u3044"
-        ]);
-        return { ok: false, results };
+      const vNow = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
+      for (const clip of context.clips) {
+        const hit = vNow.find(
+          (c) => c.startTicks === clip.videoStartTicks && c.inTicks === clip.videoInTicks && c.outTicks === clip.videoOutTicks
+        );
+        if (!hit) {
+          push("\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u518D\u89E3\u6C7A", false, [
+            "\u89E3\u6790\u5F8C\u306B\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u304C\u5909\u66F4\u3055\u308C\u305F\u3088\u3046\u3067\u3059\u3002\u300C\u89E3\u6790\u3059\u308B\u300D\u304B\u3089\u3084\u308A\u76F4\u3057\u3066\u304F\u3060\u3055\u3044"
+          ]);
+          return { ok: false, results };
+        }
       }
       const selected = candidates2.filter((c) => c.selected);
-      const segments = planKeepSegments(
-        {
-          clipId: "v0",
-          sourceInTicks: v.inTicks,
-          sourceOutTicks: v.outTicks,
-          sequenceStartTicks: v.startTicks
-        },
-        selected
-      );
-      const removedMs = selected.reduce((s, c) => s + c.removalDurationMs, 0);
-      push("Keep Segment\u751F\u6210", segments.length > 0, [
-        `\u5019\u88DC${selected.length}\u4EF6 \u2192 Segment${segments.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(removedMs / 1e3).toFixed(1)}\u79D2`
-      ]);
-      if (segments.length === 0) return { ok: false, results };
-      const nonTargetBefore = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
-      const rebuildSegments = segments.map((s) => ({
-        sourceInTicks: s.sourceInTicks,
-        sourceOutTicks: s.sourceOutTicks,
-        destinationStartTicks: s.destinationStartTicks
+      const clipRanges = context.clips.map((c) => ({
+        clipId: c.clipId,
+        sourceInTicks: c.videoInTicks,
+        sourceOutTicks: c.videoOutTicks,
+        sequenceStartTicks: c.videoStartTicks
       }));
-      try {
+      const plan = buildEditPlan(clipRanges, selected);
+      const removedMs = selected.reduce((s, c) => s + c.removalDurationMs, 0);
+      push("\u7DE8\u96C6\u8A08\u753B", true, [
+        `\u30AF\u30EA\u30C3\u30D7${context.clips.length}\u4EF6 / \u5019\u88DC${selected.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(removedMs / 1e3).toFixed(1)}\u79D2`
+      ]);
+      if (selected.length === 0) {
+        push("\u7DE8\u96C6\u8A08\u753B", false, ["\u9078\u629E\u3055\u308C\u305F\u5019\u88DC\u304C\u3042\u308A\u307E\u305B\u3093"]);
+        return { ok: false, results };
+      }
+      const nonTargetBefore = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
+      const allSegments = [];
+      const cutMarkerPositions = [];
+      for (let k = 0; k < plan.clips.length; k++) {
+        const clipPlan = plan.clips[k];
+        const clip = context.clips[k];
+        if (!clipPlan || !clip) continue;
+        const segments = clipPlan.keepSegments;
+        if (segments.length === 0) continue;
+        const single = segments.length === 1 ? segments[0] : null;
+        const isWholeClip = single && single.sourceInTicks === clip.videoInTicks && single.sourceOutTicks === clip.videoOutTicks;
+        if (isWholeClip && single) {
+          if (compareTicks(single.destinationStartTicks, clip.videoStartTicks) !== 0) {
+            await moveClipTo(
+              ppro2,
+              project,
+              targetGuid,
+              "video",
+              context.videoTrackIndex,
+              clip.videoStartTicks,
+              single.destinationStartTicks
+            );
+            await moveClipTo(
+              ppro2,
+              project,
+              targetGuid,
+              "audio",
+              context.audioTrackIndex,
+              clip.audioStartTicks,
+              single.destinationStartTicks
+            );
+            onLog(`clip${k}: \u5DE6\u8A70\u3081\u79FB\u52D5OK`);
+          }
+          allSegments.push(single);
+          continue;
+        }
+        const rebuildSegments = segments.map((s) => ({
+          sourceInTicks: s.sourceInTicks,
+          sourceOutTicks: s.sourceOutTicks,
+          destinationStartTicks: s.destinationStartTicks
+        }));
         await rebuildTrackSegments(
           ppro2,
           project,
           targetGuid,
           "video",
           context.videoTrackIndex,
-          v.startTicks,
+          clip.videoStartTicks,
           rebuildSegments,
           onLog
         );
@@ -2219,22 +2378,29 @@
           targetGuid,
           "audio",
           context.audioTrackIndex,
-          a.startTicks,
+          clip.audioStartTicks,
           rebuildSegments,
           onLog
         );
-        push("V/A\u518D\u69CB\u7BC9", true, []);
-      } catch (e) {
-        push("V/A\u518D\u69CB\u7BC9", false, [
-          "\u9014\u4E2D\u3067\u5931\u6557\u3057\u307E\u3057\u305F\u3002Ctrl+Z\uFF08\u8907\u6570\u56DE\uFF09\u3067\u9069\u7528\u524D\u306B\u623B\u305B\u307E\u3059"
-        ], String(e));
-        return { ok: false, results };
+        allSegments.push(...rebuildSegments);
+        for (let i = 1; i < segments.length; i++) {
+          const seg = segments[i];
+          const prev = segments[i - 1];
+          if (!seg || !prev) continue;
+          const removedTicks = subtractTicks(seg.sourceInTicks, prev.sourceOutTicks);
+          cutMarkerPositions.push({
+            posTicks: seg.destinationStartTicks,
+            removedSec: (ticksToApproxMs(removedTicks) / 1e3).toFixed(2)
+          });
+        }
+        onLog(`clip${k}: \u518D\u69CB\u7BC9OK\uFF08${segments.length} Segment\uFF09`);
       }
+      push("V/A\u518D\u69CB\u7BC9\uFF08\u5168\u30AF\u30EA\u30C3\u30D7\uFF09", true, []);
       const vAfter = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
       const aAfter = await scanTrack(ppro2, project, targetGuid, "audio", context.audioTrackIndex);
-      let ok = vAfter.length === segments.length && aAfter.length === segments.length;
-      const notes = [`\u30AF\u30EA\u30C3\u30D7\u6570 V=${vAfter.length} A=${aAfter.length}\uFF08\u671F\u5F85${segments.length}\uFF09`];
-      for (const seg of segments) {
+      let ok = true;
+      const notes = [];
+      for (const seg of allSegments) {
         const sv = vAfter.find((c) => c.startTicks === seg.destinationStartTicks);
         const sa = aAfter.find((c) => c.startTicks === seg.destinationStartTicks);
         if (!sv || !sa || sv.inTicks !== seg.sourceInTicks || sv.outTicks !== seg.sourceOutTicks) {
@@ -2248,37 +2414,31 @@
           break;
         }
       }
+      notes.unshift(`Segment ${allSegments.length}\u4EF6\u3092\u691C\u8A3C`);
       push("\u914D\u7F6E+A/V\u540C\u671F\u691C\u8A3C", ok, notes);
       const nonTargetAfter = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
       push("\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u4E0D\u5909\u691C\u8A3C", nonTargetBefore === nonTargetAfter, []);
       if (nonTargetBefore !== nonTargetAfter) ok = false;
       let cutCount = 0;
       try {
-        const seqNow = await freshSequence2(project, targetGuid);
-        const markers = await ppro2.Markers.getMarkers(seqNow);
-        const actions = [];
-        for (let i = 1; i < segments.length; i++) {
-          const seg = segments[i];
-          const prev = segments[i - 1];
-          if (!seg || !prev) continue;
-          const removedTicks = subtractTicks(seg.sourceInTicks, prev.sourceOutTicks);
-          const removedSec = (ticksToApproxMs(removedTicks) / 1e3).toFixed(2);
-          actions.push(
-            markers.createAddMarkerAction(
+        if (cutMarkerPositions.length > 0) {
+          const seqNow = await freshSequence2(project, targetGuid);
+          const markers = await ppro2.Markers.getMarkers(seqNow);
+          const actions = cutMarkerPositions.map(
+            (m) => markers.createAddMarkerAction(
               "KazuCut",
               "Comment",
-              ppro2.TickTime.createWithTicks(seg.destinationStartTicks),
+              ppro2.TickTime.createWithTicks(m.posTicks),
               ppro2.TickTime.createWithTicks("0"),
-              `\u3053\u3053\u3067${removedSec}\u79D2\u30AB\u30C3\u30C8`
+              `\u3053\u3053\u3067${m.removedSec}\u79D2\u30AB\u30C3\u30C8`
             )
           );
-          cutCount++;
-        }
-        if (actions.length > 0) {
           runTransaction2(project, "KazuCut Local\uFF1A\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", () => actions);
         }
+        cutCount = cutMarkerPositions.length;
         push("\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", true, [`${cutCount}\u7B87\u6240\u3078\u30DE\u30FC\u30AB\u30FC\u300CKazuCut\u300D\u3092\u8FFD\u52A0`]);
       } catch (e) {
+        cutCount = cutMarkerPositions.length;
         push("\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", false, [
           "\u30DE\u30FC\u30AB\u30FC\u306F\u6253\u3066\u307E\u305B\u3093\u3067\u3057\u305F\u304C\u3001\u30AB\u30C3\u30C8\u81EA\u4F53\u306F\u5B8C\u4E86\u3057\u3066\u3044\u307E\u3059"
         ], String(e));
@@ -2307,7 +2467,9 @@
       if (bgmMessage !== void 0) summary.bgmOverhangMessage = bgmMessage;
       return summary;
     } catch (e) {
-      push("\u9069\u7528\u51E6\u7406", false, [], String(e));
+      push("\u9069\u7528\u51E6\u7406", false, [
+        "\u9014\u4E2D\u3067\u5931\u6557\u3057\u307E\u3057\u305F\u3002Ctrl+Z\uFF08\u8907\u6570\u56DE\uFF09\u3067\u9069\u7528\u524D\u306B\u623B\u305B\u307E\u3059"
+      ], String(e));
       return { ok: false, results };
     }
   }
@@ -2327,7 +2489,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1326" : "dev";
+  var BUILD_ID = true ? "20260712T1343" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2526,12 +2688,14 @@
       try {
         const vIdx = Number(el("videoTrackSelect").value || "0");
         const aIdx = Number(el("audioTrackSelect").value || "0");
+        const scope = el("scopeSelect").value === "track" ? "track" : "selection";
         const result = await runRealAnalysis(
           ppro,
           bridge,
           state.currentSettings,
           vIdx,
           aIdx,
+          scope,
           (st) => updateProgress(st.progress, st.stage),
           abortController.signal
         );
@@ -2539,10 +2703,11 @@
           analysisContext = result.context;
           renderCandidates(result.candidates);
           const totalMs = result.candidates.filter((c) => c.selected).reduce((s, c) => s + c.removalDurationMs, 0);
+          const analyzedCount = result.context.clips.filter((c) => c.analyzed).length;
           showBanner(
-            `\u89E3\u6790\u5B8C\u4E86: \u7121\u97F3\u5019\u88DC ${result.candidates.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(totalMs / 1e3).toFixed(1)}\u79D2
+            `\u89E3\u6790\u5B8C\u4E86: ${analyzedCount}\u30AF\u30EA\u30C3\u30D7\u304B\u3089\u7121\u97F3\u5019\u88DC ${result.candidates.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(totalMs / 1e3).toFixed(1)}\u79D2
 \u30CE\u30A4\u30BA\u30D5\u30ED\u30A2 ${result.context.noiseFloorDb.toFixed(1)}dB / \u3057\u304D\u3044\u5024 ${result.context.thresholdDb.toFixed(1)}dB
-\u5019\u88DC\u3092\u78BA\u8A8D\u3057\u3066\u300C\u9078\u629E\u3057\u305F\u5019\u88DC\u3092\u9069\u7528\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+\u6642\u523B\u30AF\u30EA\u30C3\u30AF\u3067\u78BA\u8A8D \u2192 \u300C\u9078\u629E\u3057\u305F\u5019\u88DC\u3092\u9069\u7528\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
           );
         } else {
           analysisContext = null;

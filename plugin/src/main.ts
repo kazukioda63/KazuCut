@@ -220,12 +220,15 @@ async function analyze(): Promise<void> {
     try {
       const vIdx = Number(el<HTMLSelectElement>("videoTrackSelect").value || "0");
       const aIdx = Number(el<HTMLSelectElement>("audioTrackSelect").value || "0");
+      const scope =
+        el<HTMLSelectElement>("scopeSelect").value === "track" ? "track" : "selection";
       const result = await runRealAnalysis(
         ppro as unknown as PproModule,
         bridge,
         state.currentSettings,
         vIdx,
         aIdx,
+        scope,
         (st) => updateProgress(st.progress, st.stage),
         abortController.signal
       );
@@ -235,10 +238,12 @@ async function analyze(): Promise<void> {
         const totalMs = result.candidates
           .filter((c) => c.selected)
           .reduce((s, c) => s + c.removalDurationMs, 0);
+        const analyzedCount = result.context.clips.filter((c) => c.analyzed).length;
         showBanner(
-          `解析完了: 無音候補 ${result.candidates.length}件 / 推定短縮 ${(totalMs / 1000).toFixed(1)}秒\n` +
+          `解析完了: ${analyzedCount}クリップから無音候補 ${result.candidates.length}件 / ` +
+          `推定短縮 ${(totalMs / 1000).toFixed(1)}秒\n` +
           `ノイズフロア ${result.context.noiseFloorDb.toFixed(1)}dB / しきい値 ${result.context.thresholdDb.toFixed(1)}dB\n` +
-          "候補を確認して「選択した候補を適用」を押してください。"
+          "時刻クリックで確認 → 「選択した候補を適用」を押してください。"
         );
       } else {
         analysisContext = null;
