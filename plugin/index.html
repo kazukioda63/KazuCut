@@ -3,13 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <style>
+    /* UXPパネルはbodyが自動スクロールしないため、明示的にスクロール可能にする */
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
     body {
       font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
       font-size: 12px;
-      margin: 0;
-      padding: 10px;
       color: var(--uxp-host-text-color, #e5e5e5);
       background-color: var(--uxp-host-background-color, #232323);
+      overflow: hidden;
+    }
+    #scrollRoot {
+      height: 100vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 10px;
+      box-sizing: border-box;
     }
     h1 { font-size: 14px; margin: 0 0 10px; }
     .section { margin-bottom: 12px; }
@@ -47,6 +59,7 @@
   </style>
 </head>
 <body>
+  <div id="scrollRoot">
   <h1>KazuCut Local</h1>
   <div id="banner"></div>
 
@@ -170,6 +183,7 @@
     <button id="applyButton">選択した候補を適用</button>
   </div>
 
+  </div>
   <script src="dist/main.js"></script>
 </body>
 </html>
