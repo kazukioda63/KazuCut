@@ -1916,7 +1916,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1155" : "dev";
+  var BUILD_ID = true ? "20260712T1207" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2084,26 +2084,13 @@
     $.progressArea().style.display = "block";
     abortController = new AbortController();
     try {
-      const request = ppro ? buildJobRequest(
-        {
-          jobId: `analyze-${Date.now()}`,
-          // TODO(Phase 2実機): 選択クリップのProjectItemからメディアパスを解決する。
-          // API Probe完了までこの経路は到達しない（下のバナーで案内）
-          mediaPath: "",
-          sourceInTicks: "0",
-          sourceOutTicks: "0",
-          audioStreamIndex: 0
-        },
-        state.currentSettings,
-        null
-      ) : { type: "test", jobId: `test-${Date.now()}`, durationMs: 3e3, payload: "kazucut" };
-      if (ppro) {
-        showBanner(
-          "Premiere API Probe\u304C\u672A\u5B9F\u65BD\u306E\u305F\u3081\u3001\u5B9F\u30AF\u30EA\u30C3\u30D7\u306E\u89E3\u6790\u306F\u307E\u3060\u5B9F\u884C\u3067\u304D\u307E\u305B\u3093\u3002\n\u300CAPI Probe\u5B9F\u884C\u300D\u3092\u5148\u306B\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044\uFF08\u7D50\u679C\u306Fdiagnostics\u3078\u4FDD\u5B58\u3055\u308C\u307E\u3059\uFF09\u3002"
-        );
-        return;
-      }
-      const jobId = bridge.startJob(JSON.stringify({ type: "test", ...request }));
+      const request = {
+        type: "test",
+        jobId: `test-${Date.now()}`,
+        durationMs: 3e3,
+        payload: "kazucut-worker-check"
+      };
+      const jobId = bridge.startJob(JSON.stringify(request));
       currentJobId = jobId;
       const status = await pollJob(bridge, jobId, {
         intervalMs: 120,
@@ -2115,10 +2102,23 @@
         }
       });
       if (status.state === "completed") {
-        renderCandidates(demoCandidates());
-        showBanner(
-          bridgeIsMock ? "\u30CD\u30A4\u30C6\u30A3\u30D6\u672A\u63A5\u7D9A\uFF08Mock\u30E2\u30FC\u30C9\uFF09\u3067\u3059\u3002\u8868\u793A\u4E2D\u306E\u5019\u88DC\u306F\u30C7\u30E2\u7528\u3067\u3059\u3002\nWindows + Premiere\u74B0\u5883\u3067\u306E\u30BB\u30C3\u30C8\u30A2\u30C3\u30D7\u306FSDK_SETUP_REQUIRED.md\u3092\u53C2\u7167\u3057\u3066\u304F\u3060\u3055\u3044\u3002" : "\u89E3\u6790\u30B8\u30E7\u30D6\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F\u3002"
-        );
+        if (bridgeIsMock) {
+          renderCandidates(demoCandidates());
+          showBanner(
+            "\u30CD\u30A4\u30C6\u30A3\u30D6\u672A\u63A5\u7D9A\uFF08Mock\u30E2\u30FC\u30C9\uFF09\u3067\u3059\u3002\u8868\u793A\u4E2D\u306E\u5019\u88DC\u306F\u30C7\u30E2\u7528\u3067\u3059\u3002\nWindows + Premiere\u74B0\u5883\u3067\u306E\u30BB\u30C3\u30C8\u30A2\u30C3\u30D7\u306FSDK_SETUP_REQUIRED.md\u3092\u53C2\u7167\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+          );
+        } else {
+          let echoOk = false;
+          try {
+            const result = JSON.parse(bridge.getJobResult(jobId));
+            echoOk = result.echo === "kazucut-worker-check";
+          } catch {
+            echoOk = false;
+          }
+          showBanner(
+            echoOk ? "\u2705 Worker\u63A5\u7D9A\u30C6\u30B9\u30C8\u6210\u529F: KazuCutWorker.exe\u306E\u8D77\u52D5\u2192\u9032\u6357\u2192\u7D50\u679C\u53D7\u4FE1\u307E\u3067\u52D5\u4F5C\u3057\u307E\u3057\u305F\u3002\n\u3082\u3046\u4E00\u5EA6\u62BC\u3057\u3066\u89E3\u6790\u4E2D\u306B\u300C\u30AD\u30E3\u30F3\u30BB\u30EB\u300D\u3082\u8A66\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n\u5B9F\u30E1\u30C7\u30A3\u30A2\u306E\u7121\u97F3\u89E3\u6790\u306F\u3053\u306E\u5F8C\u306E\u7D71\u5408\u3067\u6709\u52B9\u306B\u306A\u308A\u307E\u3059\u3002" : "\u26A0\uFE0F Worker\u306F\u5B8C\u4E86\u3057\u307E\u3057\u305F\u304C\u7D50\u679C\u306E\u691C\u8A3C\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002"
+          );
+        }
       } else if (status.state === "cancelled") {
         showBanner("\u51E6\u7406\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
       } else {

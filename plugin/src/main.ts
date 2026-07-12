@@ -178,32 +178,18 @@ async function analyze(): Promise<void> {
   abortController = new AbortController();
 
   try {
-    // Premiere未接続時はテストジョブでブリッジ経路を検証する
-    const request = ppro
-      ? buildJobRequest(
-          {
-            jobId: `analyze-${Date.now()}`,
-            // TODO(Phase 2実機): 選択クリップのProjectItemからメディアパスを解決する。
-            // API Probe完了までこの経路は到達しない（下のバナーで案内）
-            mediaPath: "",
-            sourceInTicks: "0",
-            sourceOutTicks: "0",
-            audioStreamIndex: 0
-          },
-          state.currentSettings,
-          null
-        )
-      : { type: "test", jobId: `test-${Date.now()}`, durationMs: 3000, payload: "kazucut" };
+    // 現段階: Workerの起動・進捗・キャンセルを実証するテストジョブを実行する
+    // （実メディアの無音解析への配線はPhase 4-5の統合で有効化。buildJobRequestは
+    //   その際にこの箇所で使用する: analysisController.ts）
+    void buildJobRequest; // 未使用警告の抑止（統合予定のため残置）
+    const request = {
+      type: "test",
+      jobId: `test-${Date.now()}`,
+      durationMs: 3000,
+      payload: "kazucut-worker-check"
+    };
 
-    if (ppro) {
-      showBanner(
-        "Premiere API Probeが未実施のため、実クリップの解析はまだ実行できません。\n" +
-        "「API Probe実行」を先に実行してください（結果はdiagnosticsへ保存されます）。"
-      );
-      return;
-    }
-
-    const jobId = bridge.startJob(JSON.stringify({ type: "test", ...request }));
+    const jobId = bridge.startJob(JSON.stringify(request));
     currentJobId = jobId;
     const status = await pollJob(bridge, jobId, {
       intervalMs: 120,
@@ -216,13 +202,30 @@ async function analyze(): Promise<void> {
       }
     });
     if (status.state === "completed") {
-      // Mock経路: デモ用のダミー候補を表示（実解析はPremiere接続後）
-      renderCandidates(demoCandidates());
-      showBanner(
-        bridgeIsMock
-          ? "ネイティブ未接続（Mockモード）です。表示中の候補はデモ用です。\nWindows + Premiere環境でのセットアップはSDK_SETUP_REQUIRED.mdを参照してください。"
-          : "解析ジョブが完了しました。"
-      );
+      if (bridgeIsMock) {
+        // Mock経路: デモ用のダミー候補を表示
+        renderCandidates(demoCandidates());
+        showBanner(
+          "ネイティブ未接続（Mockモード）です。表示中の候補はデモ用です。\n" +
+          "Windows + Premiere環境でのセットアップはSDK_SETUP_REQUIRED.mdを参照してください。"
+        );
+      } else {
+        // 実Worker経路: 結果のechoを検証して報告（Phase 1相当の実機確認）
+        let echoOk = false;
+        try {
+          const result = JSON.parse(bridge.getJobResult(jobId)) as { echo?: string };
+          echoOk = result.echo === "kazucut-worker-check";
+        } catch {
+          echoOk = false;
+        }
+        showBanner(
+          echoOk
+            ? "✅ Worker接続テスト成功: KazuCutWorker.exeの起動→進捗→結果受信まで動作しました。\n" +
+              "もう一度押して解析中に「キャンセル」も試してください。\n" +
+              "実メディアの無音解析はこの後の統合で有効になります。"
+            : "⚠️ Workerは完了しましたが結果の検証に失敗しました。"
+        );
+      }
     } else if (status.state === "cancelled") {
       showBanner("処理をキャンセルしました。");
     } else {

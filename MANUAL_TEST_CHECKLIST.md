@@ -8,14 +8,14 @@ UXP Developer Toolで `build\dist\KazuCutLocal\manifest.json` をLoad。
 
 | # | 項目 | 手順 | 期待結果 | 結果 |
 |---|---|---|---|---|
-| 1 | Addonロード | パネルを開く | バナーに「Mockモード」が出ない。getVersionがexternal-worker | 未実施 |
+| 1 | Addonロード | パネルを開く | バナーに「Mockモード」が出ない。getVersionがexternal-worker | **OK 2026-07-12**（ネイティブ接続OK表示・Worker検出済み） |
 | 2 | Worker起動 | 「解析する」（テストジョブ） | 進捗0→100%、UIが固まらない | 未実施 |
 | 3 | Workerキャンセル | 解析中に「キャンセル」 | 3秒以内に停止、cancelled表示 | 未実施 |
 | 4 | Worker強制終了 | 解析中にタスクマネージャでKazuCutWorker.exeを強制終了 | WORKER_CRASHEDが表示されPremiereは落ちない | 未実施 |
-| 5 | パネル表示 | ドック/フローティング | 最小320x400で崩れない | 未実施 |
-| 6 | API Probe | 「API Probe実行」 | plugin-data:/diagnostics/api-probe.json生成。結果をdocs/api-probe.mdへ転記 | 未実施 |
+| 5 | パネル表示 | ドック/フローティング | 最小320x400で崩れない | OK 2026-07-12（スクロール修正済み） |
+| 6 | API Probe | 「API Probe実行」 | plugin-data:/diagnostics/api-probe.json生成。結果をdocs/api-probe.mdへ転記 | **OK 2026-07-12**（読取系11+変更系すべて確定） |
 | 7 | V1/A1選択 | トラックドロップダウン | 実シーケンスのトラック一覧が出る | 未実施 |
-| 8 | Sequence複製 | 複製実行 | 新規シーケンス1件がGUIDで特定される | 未実施 |
+| 8 | Sequence複製 | 複製実行 | 新規シーケンス1件がGUIDで特定される | **OK 2026-07-12**（変更系Probeで3回確認） |
 | 9 | 500ms削除 | 仕様14章のテスト構成で実行 | Keep Segment2件、後半左詰め | 未実施 |
 | 10 | A/V同期 | 9の後に波形確認 | ずれが1フレーム未満 | 未実施 |
 | 11 | BGM不変 | 9の後にA2確認 | 位置・長さ完全不変 | 未実施 |

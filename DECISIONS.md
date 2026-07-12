@@ -53,3 +53,7 @@
   （移動量=目的地−現在地で計算）。SetInPointは末尾固定の先頭トリム（start可変）
   → Clone→SetIn/Out→Moveで位置補正の順序を採用。DOM参照は毎回取り直し必須、
   Action生成はlockedAccess内。→ docs/api-probe.md
+- **D-018**（2026-07-12 実機）: Hybrid Addonロードは非同期（await require）。
+  mingw静的リンク版kazucut-native.uxpaddonがPremiere 26.3.0実機でロード成功、
+  Workerパス解決成功（「ネイティブ接続OK」）。ADR-001の実機ゲート前半クリア。
+  残り: Worker実起動/キャンセル/Job Object（チェックリスト2-4,22）。
