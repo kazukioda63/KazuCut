@@ -239,6 +239,8 @@ export interface ApplySummary {
   ok: boolean;
   results: ProbeResult[];
   editedSequenceGuid?: string;
+  editedSequenceName?: string;
+  activated?: boolean;
   backupSequenceGuid?: string;
   bgmOverhangMessage?: string;
 }
@@ -268,11 +270,13 @@ export async function applyRealEdits(
 
   // --- 出力先の準備（仕様17章） ---
   let targetGuid: string;
+  let targetName = "";
   let backupGuid: string | undefined;
   if (outputMode === "duplicate") {
     try {
       const clone = await cloneSequenceAndIdentify(project, originalGuid);
       targetGuid = clone.guid;
+      targetName = clone.name;
       push("複製シーケンス作成", true, [clone.name]);
     } catch (e) {
       push("複製シーケンス作成", false, [], String(e));
@@ -401,11 +405,18 @@ export async function applyRealEdits(
     }
 
     // 編集結果のシーケンスをアクティブ化（ユーザーが結果をすぐ見られるように）
+    let activated = false;
     if (ok) {
       try {
         const edited = await freshSequence(project, targetGuid);
-        await project.setActiveSequence(edited);
-        push("編集結果シーケンスをアクティブ化", true, []);
+        const returned = await project.setActiveSequence(edited);
+        // 戻り値だけを信用せず、実際にアクティブになったかを確認する
+        const nowActive = await project.getActiveSequence();
+        activated = returned === true && nowActive !== null && String(nowActive.guid) === targetGuid;
+        push("編集結果シーケンスをアクティブ化", activated, [
+          `setActiveSequence戻り値=${String(returned)}`,
+          activated ? "アクティブ化成功" : "アクティブ化が反映されませんでした（手動で開いてください）"
+        ]);
       } catch (e) {
         push("編集結果シーケンスをアクティブ化", false, [
           "手動でプロジェクトパネルから複製シーケンスを開いてください"
@@ -413,7 +424,10 @@ export async function applyRealEdits(
       }
     }
 
-    const summary: ApplySummary = { ok, results, editedSequenceGuid: targetGuid };
+    const summary: ApplySummary = {
+      ok, results, editedSequenceGuid: targetGuid, activated
+    };
+    if (targetName) summary.editedSequenceName = targetName;
     if (backupGuid !== undefined) summary.backupSequenceGuid = backupGuid;
     if (bgmMessage !== undefined) summary.bgmOverhangMessage = bgmMessage;
     return summary;

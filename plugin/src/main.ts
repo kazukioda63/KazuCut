@@ -535,11 +535,17 @@ async function applySelected(): Promise<void> {
       logs.push("（診断結果の保存に失敗）");
     }
     if (summary.ok) {
+      const nameInfo = summary.editedSequenceName
+        ? `結果のシーケンス名: 「${summary.editedSequenceName}」\n`
+        : "";
+      const openInfo = summary.activated
+        ? "カット済みシーケンスを開きました。そのまま再生して確認してください。\n"
+        : nameInfo +
+          "自動で開けませんでした。プロジェクトパネルの検索欄に「コピー」と入力し、\n" +
+          "上記の名前のシーケンスをダブルクリックで開いてください。\n";
       showBanner(
         "✅ 適用完了。すべての検証（配置・A/V同期・対象外トラック・元シーケンス）を通過しました。\n" +
-        (outputMode === "duplicate"
-          ? "複製シーケンスを開いて結果を確認してください。\n"
-          : "バックアップ複製を保持しています。\n") +
+        (outputMode === "duplicate" ? openInfo : "バックアップ複製を保持しています。\n") +
         (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
       );
       // 適用済み候補をクリア

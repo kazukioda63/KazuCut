@@ -2090,11 +2090,13 @@
     const originalGuid = context.sequenceGuid;
     const originalFingerprint = await sequenceFingerprint2(ppro2, project, originalGuid);
     let targetGuid;
+    let targetName = "";
     let backupGuid;
     if (outputMode === "duplicate") {
       try {
         const clone = await cloneSequenceAndIdentify(project, originalGuid);
         targetGuid = clone.guid;
+        targetName = clone.name;
         push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", true, [clone.name]);
       } catch (e) {
         push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", false, [], String(e));
@@ -2218,18 +2220,30 @@
 \u5FC5\u8981\u306B\u5FDC\u3058\u3066Premiere\u4E0A\u3067\u77ED\u304F\u3057\u3066\u304F\u3060\u3055\u3044\u3002`;
         }
       }
+      let activated = false;
       if (ok) {
         try {
           const edited = await freshSequence2(project, targetGuid);
-          await project.setActiveSequence(edited);
-          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", true, []);
+          const returned = await project.setActiveSequence(edited);
+          const nowActive = await project.getActiveSequence();
+          activated = returned === true && nowActive !== null && String(nowActive.guid) === targetGuid;
+          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", activated, [
+            `setActiveSequence\u623B\u308A\u5024=${String(returned)}`,
+            activated ? "\u30A2\u30AF\u30C6\u30A3\u30D6\u5316\u6210\u529F" : "\u30A2\u30AF\u30C6\u30A3\u30D6\u5316\u304C\u53CD\u6620\u3055\u308C\u307E\u305B\u3093\u3067\u3057\u305F\uFF08\u624B\u52D5\u3067\u958B\u3044\u3066\u304F\u3060\u3055\u3044\uFF09"
+          ]);
         } catch (e) {
           push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", false, [
             "\u624B\u52D5\u3067\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u304B\u3089\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u304F\u3060\u3055\u3044"
           ], String(e));
         }
       }
-      const summary = { ok, results, editedSequenceGuid: targetGuid };
+      const summary = {
+        ok,
+        results,
+        editedSequenceGuid: targetGuid,
+        activated
+      };
+      if (targetName) summary.editedSequenceName = targetName;
       if (backupGuid !== void 0) summary.backupSequenceGuid = backupGuid;
       if (bgmMessage !== void 0) summary.bgmOverhangMessage = bgmMessage;
       return summary;
@@ -2254,7 +2268,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1251" : "dev";
+  var BUILD_ID = true ? "20260712T1300" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2735,8 +2749,11 @@
         logs.push("\uFF08\u8A3A\u65AD\u7D50\u679C\u306E\u4FDD\u5B58\u306B\u5931\u6557\uFF09");
       }
       if (summary.ok) {
+        const nameInfo = summary.editedSequenceName ? `\u7D50\u679C\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u540D: \u300C${summary.editedSequenceName}\u300D
+` : "";
+        const openInfo = summary.activated ? "\u30AB\u30C3\u30C8\u6E08\u307F\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u304D\u307E\u3057\u305F\u3002\u305D\u306E\u307E\u307E\u518D\u751F\u3057\u3066\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n" : nameInfo + "\u81EA\u52D5\u3067\u958B\u3051\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u306E\u691C\u7D22\u6B04\u306B\u300C\u30B3\u30D4\u30FC\u300D\u3068\u5165\u529B\u3057\u3001\n\u4E0A\u8A18\u306E\u540D\u524D\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30C0\u30D6\u30EB\u30AF\u30EA\u30C3\u30AF\u3067\u958B\u3044\u3066\u304F\u3060\u3055\u3044\u3002\n";
         showBanner(
-          "\u2705 \u9069\u7528\u5B8C\u4E86\u3002\u3059\u3079\u3066\u306E\u691C\u8A3C\uFF08\u914D\u7F6E\u30FBA/V\u540C\u671F\u30FB\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u30FB\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\uFF09\u3092\u901A\u904E\u3057\u307E\u3057\u305F\u3002\n" + (outputMode === "duplicate" ? "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u7D50\u679C\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n" : "\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3092\u4FDD\u6301\u3057\u3066\u3044\u307E\u3059\u3002\n") + (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
+          "\u2705 \u9069\u7528\u5B8C\u4E86\u3002\u3059\u3079\u3066\u306E\u691C\u8A3C\uFF08\u914D\u7F6E\u30FBA/V\u540C\u671F\u30FB\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u30FB\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\uFF09\u3092\u901A\u904E\u3057\u307E\u3057\u305F\u3002\n" + (outputMode === "duplicate" ? openInfo : "\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3092\u4FDD\u6301\u3057\u3066\u3044\u307E\u3059\u3002\n") + (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
         );
         analysisContext = null;
         renderCandidates([]);
