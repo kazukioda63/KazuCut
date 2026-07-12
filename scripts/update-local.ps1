@@ -8,6 +8,11 @@ param(
 $ErrorActionPreference = "Continue"
 $base = "https://raw.githubusercontent.com/kazukioda63/KazuCut/claude/kazucut-local-premiere-r7craw"
 
+# すべての表示をデスクトップのログへも記録する（ウィンドウが閉じても読めるように）
+$logPath = "$env:USERPROFILE\Desktop\kazucut-update.log"
+try { Start-Transcript -Path $logPath -Force | Out-Null } catch { }
+Write-Host "ログ: $logPath"
+
 # --- プラグインフォルダの自動探索 ---
 $candidates = @()
 if ($Target) { $candidates += $Target }
@@ -32,6 +37,7 @@ if (-not $found) {
         $found = $manual
     } else {
         Write-Host "そこにも plugin\manifest.json がありません。中断します。" -ForegroundColor Red
+        try { Stop-Transcript | Out-Null } catch { }
         return
     }
 }
@@ -46,6 +52,7 @@ try {
     Write-Host "このフォルダへ書き込めません（アクセス拒否）。" -ForegroundColor Red
     Write-Host "PowerShellを右クリック→「管理者として実行」で開き直すか、" -ForegroundColor Yellow
     Write-Host "フォルダを $env:USERPROFILE\KazuCut など書き込める場所へ移動してください。" -ForegroundColor Yellow
+    try { Stop-Transcript | Out-Null } catch { }
     return
 }
 
@@ -70,6 +77,7 @@ foreach ($f in $files) {
 }
 if ($failed) {
     Write-Host "`n一部のファイルを更新できませんでした。上の赤いメッセージを報告してください。" -ForegroundColor Red
+    try { Stop-Transcript | Out-Null } catch { }
     return
 }
 
@@ -78,3 +86,4 @@ if ($match) {
     Write-Host "`n完了。ビルドID: $($match.Matches[0].Value)" -ForegroundColor Green
 }
 Write-Host "UXP Developer Toolでプラグインを Unload → Load して反映してください。"
+try { Stop-Transcript | Out-Null } catch { }
