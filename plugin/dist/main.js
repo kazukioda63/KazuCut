@@ -396,6 +396,7 @@
   // plugin/src/constants.ts
   var ASSUMED_TICKS_PER_SECOND = "254016000000";
   var SETTINGS_SCHEMA_VERSION = 1;
+  var AV_PAIR_TOLERANCE_MS = 1;
 
   // plugin/src/ticks.ts
   var TICK_RE = /^-?\d+$/;
@@ -1288,8 +1289,620 @@
     return results;
   }
 
+  // plugin/src/premiere/avPairResolver.ts
+  function resolveAvPair(video, audioTrackClips, targetAudioTrackIndex) {
+    const videoError = checkSupported(video);
+    if (videoError) return { ok: false, error: videoError };
+    const tol = msToTicks(AV_PAIR_TOLERANCE_MS);
+    const within = (a, b) => {
+      const d = subtractTicks(a, b);
+      const abs = d.startsWith("-") ? d.slice(1) : d;
+      return compareTicks(abs, tol) <= 0;
+    };
+    const overlapping = audioTrackClips.filter(
+      (a) => a.mediaType === "audio" && a.trackIndex === targetAudioTrackIndex && compareTicks(a.startTicks, video.endTicks) < 0 && compareTicks(a.endTicks, video.startTicks) > 0
+    );
+    const strict = overlapping.filter(
+      (a) => a.projectItemId === video.projectItemId && within(a.startTicks, video.startTicks) && within(a.endTicks, video.endTicks) && within(a.inTicks, video.inTicks) && within(a.outTicks, video.outTicks) && a.speed === 100 && !a.reversed
+    );
+    if (strict.length === 1) {
+      const audio = strict[0];
+      if (!audio) {
+        return {
+          ok: false,
+          error: createError("AMBIGUOUS_AUDIO_PAIR", "\u5185\u90E8\u30A8\u30E9\u30FC: strict[0]\u304Cundefined")
+        };
+      }
+      const audioError = checkSupported(audio);
+      if (audioError) return { ok: false, error: audioError };
+      return { ok: true, video, audio };
+    }
+    if (strict.length > 1) {
+      return {
+        ok: false,
+        error: createError(
+          "AMBIGUOUS_AUDIO_PAIR",
+          `\u53B3\u5BC6\u4E00\u81F4\u3059\u308B\u97F3\u58F0\u30AF\u30EA\u30C3\u30D7\u304C${strict.length}\u4EF6\u3042\u308A\u307E\u3059`,
+          { candidateIds: strict.map((c) => c.clipId) }
+        ),
+        candidates: strict
+      };
+    }
+    return {
+      ok: false,
+      error: createError(
+        "AMBIGUOUS_AUDIO_PAIR",
+        `\u5BFE\u5FDC\u3059\u308B\u97F3\u58F0\u30AF\u30EA\u30C3\u30D7\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\uFF08\u91CD\u306A\u308A\u5019\u88DC${overlapping.length}\u4EF6\uFF09`,
+        { candidateIds: overlapping.map((c) => c.clipId) }
+      ),
+      candidates: overlapping
+    };
+  }
+  function checkSupported(clip) {
+    if (clip.mediaOffline) {
+      return createError("MEDIA_OFFLINE", `clip=${clip.clipId}`);
+    }
+    if (clip.clipKind === "nested") {
+      return createError("UNSUPPORTED_NEST", `clip=${clip.clipId}`);
+    }
+    if (clip.clipKind === "multicam") {
+      return createError("UNSUPPORTED_MULTICAM", `clip=${clip.clipId}`);
+    }
+    if (clip.clipKind === "merged") {
+      return createError("UNSUPPORTED_MERGED_CLIP", `clip=${clip.clipId}`);
+    }
+    if (clip.reversed) {
+      return createError("UNSUPPORTED_REVERSE", `clip=${clip.clipId}`);
+    }
+    if (clip.timeRemapped) {
+      return createError("UNSUPPORTED_TIME_REMAP", `clip=${clip.clipId}`);
+    }
+    if (clip.speed !== 100) {
+      return createError("UNSUPPORTED_SPEED", `clip=${clip.clipId}, speed=${clip.speed}%`);
+    }
+    return null;
+  }
+
+  // plugin/src/analysis/keepSegmentPlanner.ts
+  function planKeepSegments(clip, selectedCandidates) {
+    const cuts = selectedCandidates.filter((c) => c.selected && c.clipId === clip.clipId).map((c) => shrinkForRetention(c)).filter((c) => compareTicks(c.startTicks, c.endTicks) < 0).filter(
+      (c) => compareTicks(c.endTicks, clip.sourceInTicks) > 0 && compareTicks(c.startTicks, clip.sourceOutTicks) < 0
+    ).map((c) => ({
+      startTicks: maxT(c.startTicks, clip.sourceInTicks),
+      endTicks: minT(c.endTicks, clip.sourceOutTicks)
+    })).sort((a, b) => compareTicks(a.startTicks, b.startTicks));
+    for (let i = 1; i < cuts.length; i++) {
+      const prev = cuts[i - 1];
+      const cur = cuts[i];
+      if (prev && cur && compareTicks(cur.startTicks, prev.endTicks) < 0) {
+        throw new Error(
+          "\u524A\u9664\u5019\u88DC\u304C\u91CD\u306A\u3063\u3066\u3044\u307E\u3059\u3002\u5019\u88DC\u7D71\u5408(mergeCandidates)\u3092\u5148\u306B\u5B9F\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+        );
+      }
+    }
+    const segments = [];
+    let cursor = clip.sourceInTicks;
+    let destCursor = clip.sequenceStartTicks;
+    let index = 0;
+    const pushSegment = (srcIn, srcOut) => {
+      if (compareTicks(srcIn, srcOut) >= 0) return;
+      const duration = subtractTicks(srcOut, srcIn);
+      const originalSeqStart = addTicks(
+        clip.sequenceStartTicks,
+        subtractTicks(srcIn, clip.sourceInTicks)
+      );
+      segments.push({
+        id: `${clip.clipId}-keep-${index++}`,
+        sourceInTicks: srcIn,
+        sourceOutTicks: srcOut,
+        originalSequenceStartTicks: originalSeqStart,
+        destinationStartTicks: destCursor,
+        durationTicks: duration
+      });
+      destCursor = addTicks(destCursor, duration);
+    };
+    for (const cut of cuts) {
+      pushSegment(cursor, cut.startTicks);
+      cursor = cut.endTicks;
+    }
+    pushSegment(cursor, clip.sourceOutTicks);
+    return segments;
+  }
+  function shrinkForRetention(c) {
+    if (c.retainedDurationMs <= 0) {
+      return { startTicks: c.sourceStartTicks, endTicks: c.sourceEndTicks };
+    }
+    const retainTicks = msToTicks(c.retainedDurationMs);
+    const total = subtractTicks(c.sourceEndTicks, c.sourceStartTicks);
+    if (compareTicks(retainTicks, total) >= 0) {
+      return { startTicks: c.sourceStartTicks, endTicks: c.sourceStartTicks };
+    }
+    const front = divTicksBySmallInt(multiplyTicksBySmallInt(retainTicks, 40), 100).quotient;
+    const back = subtractTicks(retainTicks, front);
+    return {
+      startTicks: addTicks(c.sourceStartTicks, front),
+      endTicks: subtractTicks(c.sourceEndTicks, back)
+    };
+  }
+  function maxT(a, b) {
+    return compareTicks(a, b) >= 0 ? a : b;
+  }
+  function minT(a, b) {
+    return compareTicks(a, b) <= 0 ? a : b;
+  }
+
+  // plugin/src/premiere/uxpTimeline.ts
+  async function freshSequence2(project, guid) {
+    const all = await project.getSequences();
+    const seq = all.find((s) => String(s.guid) === guid);
+    if (!seq) throw new Error(`\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093: ${guid}`);
+    return seq;
+  }
+  function runTransaction2(project, label, buildActions) {
+    let innerError = null;
+    project.lockedAccess(() => {
+      try {
+        project.executeTransaction((compound) => {
+          for (const action of buildActions()) compound.addAction(action);
+        }, label);
+      } catch (e) {
+        innerError = e;
+      }
+    });
+    if (innerError) throw innerError;
+  }
+  async function liveItems(ppro2, project, guid, kind, index) {
+    const seq = await freshSequence2(project, guid);
+    const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
+    return track.getTrackItems(clipTrackItemType(ppro2), false);
+  }
+  async function scanTrack(ppro2, project, guid, kind, index) {
+    const seq = await freshSequence2(project, guid);
+    const track = kind === "video" ? await seq.getVideoTrack(index) : await seq.getAudioTrack(index);
+    const items = track.getTrackItems(clipTrackItemType(ppro2), false);
+    const out = [];
+    for (const item of items) {
+      const projectItem = await item.getProjectItem().catch(() => null);
+      out.push({
+        kind,
+        trackIndex: index,
+        trackName: track.name,
+        name: await item.getName(),
+        projectItemName: projectItem?.name ?? "",
+        startTicks: (await item.getStartTime()).ticks,
+        endTicks: (await item.getEndTime()).ticks,
+        inTicks: (await item.getInPoint()).ticks,
+        outTicks: (await item.getOutPoint()).ticks,
+        speed: await item.getSpeed().catch(() => 100),
+        reversed: Boolean(await item.isSpeedReversed().catch(() => 0))
+      });
+    }
+    return out;
+  }
+  async function trackCount(project, guid, kind) {
+    const seq = await freshSequence2(project, guid);
+    return kind === "video" ? seq.getVideoTrackCount() : seq.getAudioTrackCount();
+  }
+  async function resolveItem(ppro2, project, guid, kind, index, predicate, what) {
+    const items = await liveItems(ppro2, project, guid, kind, index);
+    const hits = [];
+    for (const item of items) {
+      const start = (await item.getStartTime()).ticks;
+      const in_ = (await item.getInPoint()).ticks;
+      const out = (await item.getOutPoint()).ticks;
+      if (predicate({ start, in_, out })) hits.push(item);
+    }
+    if (hits.length !== 1 || !hits[0]) {
+      throw new Error(`${what}: \u5BFE\u8C61\u304C${hits.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u5B89\u5168\u306E\u305F\u3081\u4E2D\u6B62\u3057\u307E\u3059`);
+    }
+    return hits[0];
+  }
+  function mediaTypeConstant(ppro2, kind) {
+    const mt = ppro2.Constants?.MediaType;
+    const v = kind === "video" ? mt?.["VIDEO"] : mt?.["AUDIO"];
+    if (v === void 0) throw new Error("Constants.MediaType\u304C\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+    return v;
+  }
+  async function cloneClipToTemp(ppro2, project, guid, kind, trackIndex, sourceStartTicks, tempPosTicks) {
+    const before = await scanTrack(ppro2, project, guid, kind, trackIndex);
+    const beforeStarts = new Set(before.map((c) => c.startTicks));
+    const item = await resolveItem(
+      ppro2,
+      project,
+      guid,
+      kind,
+      trackIndex,
+      (c) => c.start === sourceStartTicks,
+      "Clone\u5BFE\u8C61"
+    );
+    const currentStart = (await item.getStartTime()).ticks;
+    const offset = subtractTicks(tempPosTicks, currentStart);
+    const seq = await freshSequence2(project, guid);
+    const editor = ppro2.SequenceEditor.getEditor(seq);
+    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u8907\u88FD", () => [
+      editor.createCloneTrackItemAction(item, ppro2.TickTime.createWithTicks(offset), 0, 0, true, false)
+    ]);
+    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
+    const added = after.filter((c) => !beforeStarts.has(c.startTicks));
+    if (added.length !== 1 || !added[0]) {
+      throw new Error(`\u8907\u88FD\u5F8C\u306E\u65B0\u898FTrackItem\u304C${added.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`);
+    }
+    return { observedStartTicks: added[0].startTicks };
+  }
+  async function setClipInOut(ppro2, project, guid, kind, trackIndex, currentStartTicks, inTicks, outTicks) {
+    const item = await resolveItem(
+      ppro2,
+      project,
+      guid,
+      kind,
+      trackIndex,
+      (c) => c.start === currentStartTicks,
+      "In/Out\u8A2D\u5B9A\u5BFE\u8C61"
+    );
+    runTransaction2(project, "KazuCut: In/Out\u8A2D\u5B9A", () => [
+      item.createSetInPointAction(ppro2.TickTime.createWithTicks(inTicks)),
+      item.createSetOutPointAction(ppro2.TickTime.createWithTicks(outTicks))
+    ]);
+    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
+    const hits = after.filter((c) => c.inTicks === inTicks && c.outTicks === outTicks);
+    if (hits.length !== 1 || !hits[0]) {
+      throw new Error(`In/Out\u8A2D\u5B9A\u5F8C\u306E\u7279\u5B9A\u304C${hits.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`);
+    }
+    return { observedStartTicks: hits[0].startTicks };
+  }
+  async function moveClipTo(ppro2, project, guid, kind, trackIndex, currentStartTicks, destStartTicks) {
+    if (compareTicks(currentStartTicks, destStartTicks) === 0) return;
+    const item = await resolveItem(
+      ppro2,
+      project,
+      guid,
+      kind,
+      trackIndex,
+      (c) => c.start === currentStartTicks,
+      "Move\u5BFE\u8C61"
+    );
+    const delta = subtractTicks(destStartTicks, currentStartTicks);
+    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u79FB\u52D5", () => [
+      item.createMoveAction(ppro2.TickTime.createWithTicks(delta))
+    ]);
+    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
+    if (!after.some((c) => c.startTicks === destStartTicks)) {
+      throw new Error(
+        `Move\u7740\u5730\u691C\u8A3C\u5931\u6557: ${destStartTicks} \u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093\uFF08\u5B9F\u4F4D\u7F6E: ${after.map((c) => c.startTicks).join(",")}\uFF09`
+      );
+    }
+  }
+  async function removeClipAt(ppro2, project, guid, kind, trackIndex, startTicks) {
+    const item = await resolveItem(
+      ppro2,
+      project,
+      guid,
+      kind,
+      trackIndex,
+      (c) => c.start === startTicks,
+      "\u524A\u9664\u5BFE\u8C61"
+    );
+    const seq = await freshSequence2(project, guid);
+    const selection = await seq.getSelection();
+    const existing = await selection.getTrackItems();
+    for (const it of existing) selection.removeItem(it);
+    selection.addItem(item, true);
+    const editor = ppro2.SequenceEditor.getEditor(seq);
+    const mediaType = mediaTypeConstant(ppro2, kind);
+    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u524A\u9664", () => [
+      editor.createRemoveItemsAction(selection, false, mediaType, false)
+    ]);
+  }
+  async function sequenceEndTicks(project, guid) {
+    const seq = await freshSequence2(project, guid);
+    return (await seq.getEndTime()).ticks;
+  }
+  async function cloneSequenceAndIdentify(project, sourceGuid) {
+    const before = await project.getSequences();
+    const beforeGuids = new Set(before.map((s) => String(s.guid)));
+    const fresh = await freshSequence2(project, sourceGuid);
+    runTransaction2(project, "KazuCut: \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD", () => [fresh.createCloneAction()]);
+    const after = await project.getSequences();
+    const added = after.filter((s) => !beforeGuids.has(String(s.guid)));
+    if (added.length !== 1 || !added[0]) {
+      throw new Error(`\u8907\u88FD\u5F8C\u306E\u65B0\u898F\u30B7\u30FC\u30B1\u30F3\u30B9\u304C${added.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`);
+    }
+    return { guid: String(added[0].guid), name: added[0].name };
+  }
+  async function sequenceFingerprint2(ppro2, project, guid) {
+    const parts = [];
+    for (const kind of ["video", "audio"]) {
+      const count = await trackCount(project, guid, kind);
+      for (let i = 0; i < count; i++) {
+        const clips = await scanTrack(ppro2, project, guid, kind, i);
+        for (const c of clips) {
+          parts.push(
+            `${kind}${i}:${c.projectItemName}:${c.startTicks}-${c.endTicks}:${c.inTicks}/${c.outTicks}:${c.speed}`
+          );
+        }
+      }
+    }
+    return parts.sort().join("|");
+  }
+  async function rebuildTrackSegments(ppro2, project, guid, kind, trackIndex, originalStartTicks, segments, log) {
+    if (segments.length === 0) throw new Error("Keep Segment\u304C0\u4EF6");
+    const seqEnd = await sequenceEndTicks(project, guid);
+    const tempBase = addTicks(seqEnd, "2540160000000");
+    const tempGap = "2540160000000";
+    {
+      const clips = await scanTrack(ppro2, project, guid, kind, trackIndex);
+      const inTemp = clips.filter((c) => compareTicks(c.endTicks, tempBase) > 0);
+      if (inTemp.length > 0) {
+        throw new Error(`\u4E00\u6642\u9818\u57DF\u304C\u7A7A\u3067\u306F\u3042\u308A\u307E\u305B\u3093\uFF08${inTemp.length}\u4EF6\uFF09`);
+      }
+    }
+    const placed = [];
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (!seg) continue;
+      let tempPos = tempBase;
+      for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
+      const cloned = await cloneClipToTemp(
+        ppro2,
+        project,
+        guid,
+        kind,
+        trackIndex,
+        originalStartTicks,
+        tempPos
+      );
+      log(`${kind} seg${i}: \u8907\u88FDOK\uFF08\u5B9F\u4F4D\u7F6E ${cloned.observedStartTicks}\uFF09`);
+      const trimmed = await setClipInOut(
+        ppro2,
+        project,
+        guid,
+        kind,
+        trackIndex,
+        cloned.observedStartTicks,
+        seg.sourceInTicks,
+        seg.sourceOutTicks
+      );
+      log(`${kind} seg${i}: In/Out\u8A2D\u5B9AOK\uFF08\u5B9F\u4F4D\u7F6E ${trimmed.observedStartTicks}\uFF09`);
+      placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
+    }
+    await removeClipAt(ppro2, project, guid, kind, trackIndex, originalStartTicks);
+    log(`${kind}: \u5143\u30AF\u30EA\u30C3\u30D7\u524A\u9664OK`);
+    for (let i = 0; i < placed.length; i++) {
+      const p = placed[i];
+      if (!p) continue;
+      await moveClipTo(ppro2, project, guid, kind, trackIndex, p.startTicks, p.dest);
+      log(`${kind} seg${i}: \u76EE\u7684\u4F4D\u7F6E ${p.dest} \u3078\u914D\u7F6EOK`);
+    }
+  }
+
+  // plugin/src/premiere/phase3Demo.ts
+  function toClipInfo(c, id) {
+    return {
+      clipId: id,
+      mediaType: c.kind,
+      trackIndex: c.trackIndex,
+      projectItemId: c.projectItemName,
+      startTicks: c.startTicks,
+      endTicks: c.endTicks,
+      inTicks: c.inTicks,
+      outTicks: c.outTicks,
+      speed: c.speed,
+      reversed: c.reversed,
+      timeRemapped: false,
+      mediaOffline: false,
+      clipKind: "standard"
+    };
+  }
+  async function runPhase3Demo(ppro2, videoTrackIndex, audioTrackIndex, onLog) {
+    const results = [];
+    const push = (apiName, succeeded, notes, error) => {
+      const r = { apiName, available: succeeded, succeeded, notes };
+      if (error !== void 0) r.error = error;
+      results.push(r);
+      onLog(`${succeeded ? "\u2713" : "\u2717"} ${apiName}`);
+    };
+    const project = await ppro2.Project.getActiveProject();
+    if (!project) {
+      push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8", false, [], "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
+      return results;
+    }
+    const active = await project.getActiveSequence();
+    if (!active) {
+      push("\u524D\u63D0: \u30A2\u30AF\u30C6\u30A3\u30D6\u30B7\u30FC\u30B1\u30F3\u30B9", false, [], "\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u3042\u308A\u307E\u305B\u3093");
+      return results;
+    }
+    const originalGuid = String(active.guid);
+    const originalFingerprint = await sequenceFingerprint2(ppro2, project, originalGuid);
+    let cloneGuid;
+    let cloneName;
+    try {
+      const clone = await cloneSequenceAndIdentify(project, originalGuid);
+      cloneGuid = clone.guid;
+      cloneName = clone.name;
+      push("1. \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD+\u7279\u5B9A", true, [`\u8907\u88FD\u540D: ${clone.name}`]);
+    } catch (e) {
+      push("1. \u30B7\u30FC\u30B1\u30F3\u30B9\u8907\u88FD+\u7279\u5B9A", false, [], String(e));
+      return results;
+    }
+    try {
+      const vClips = await scanTrack(ppro2, project, cloneGuid, "video", videoTrackIndex);
+      const aClips = await scanTrack(ppro2, project, cloneGuid, "audio", audioTrackIndex);
+      if (vClips.length === 0) {
+        push("2. A/V\u30DA\u30A2\u89E3\u6C7A", false, [
+          `\u6620\u50CF\u30C8\u30E9\u30C3\u30AFV${videoTrackIndex + 1}\u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093`
+        ]);
+        return results;
+      }
+      const video = toClipInfo(vClips[0], "v0");
+      const audioInfos = aClips.map((c, i) => toClipInfo(c, `a${i}`));
+      const pair = resolveAvPair(video, audioInfos, audioTrackIndex);
+      if (!pair.ok) {
+        push("2. A/V\u30DA\u30A2\u89E3\u6C7A", false, [pair.error.userMessage], pair.error.developerMessage);
+        return results;
+      }
+      push("2. A/V\u30DA\u30A2\u89E3\u6C7A", true, [
+        `\u6620\u50CF: ${video.projectItemId} start=${video.startTicks}`,
+        `\u97F3\u58F0: ${pair.audio.projectItemId} start=${pair.audio.startTicks}`
+      ]);
+      const clipDuration = subtractTicks(video.outTicks, video.inTicks);
+      if (compareTicks(clipDuration, msToTicks(2e3)) < 0) {
+        push("3. Keep Segment\u751F\u6210", false, ["\u30AF\u30EA\u30C3\u30D7\u304C2\u79D2\u672A\u6E80\u306E\u305F\u3081\u5B9F\u8A3C\u306B\u4E0D\u9069\u3067\u3059"]);
+        return results;
+      }
+      const mid = addTicks(video.inTicks, divTicksBySmallInt(clipDuration, 2).quotient);
+      const half = msToTicks(250);
+      const cut = {
+        id: "phase3-cut",
+        reason: "manual",
+        clipId: "v0",
+        sourceStartTicks: subtractTicks(mid, half),
+        sourceEndTicks: addTicks(mid, half),
+        sequenceStartTicks: "0",
+        sequenceEndTicks: "0",
+        originalDurationMs: 500,
+        retainedDurationMs: 0,
+        removalDurationMs: 500,
+        selected: true,
+        warnings: [],
+        metadata: {}
+      };
+      const segments = planKeepSegments(
+        {
+          clipId: "v0",
+          sourceInTicks: video.inTicks,
+          sourceOutTicks: video.outTicks,
+          sequenceStartTicks: video.startTicks
+        },
+        [cut]
+      );
+      push("3. Keep Segment\u751F\u6210", segments.length === 2, [
+        `Segment\u6570=${segments.length}\uFF08\u671F\u5F852\uFF09`,
+        ...segments.map(
+          (s, i) => `seg${i}: source[${s.sourceInTicks}..${s.sourceOutTicks}] \u2192 dest=${s.destinationStartTicks}`
+        )
+      ]);
+      if (segments.length !== 2) return results;
+      const nonTargetBefore = await nonTargetFingerprint(
+        ppro2,
+        project,
+        cloneGuid,
+        videoTrackIndex,
+        audioTrackIndex
+      );
+      const rebuildSegments = segments.map((s) => ({
+        sourceInTicks: s.sourceInTicks,
+        sourceOutTicks: s.sourceOutTicks,
+        destinationStartTicks: s.destinationStartTicks
+      }));
+      try {
+        await rebuildTrackSegments(
+          ppro2,
+          project,
+          cloneGuid,
+          "video",
+          videoTrackIndex,
+          video.startTicks,
+          rebuildSegments,
+          onLog
+        );
+        push("4. \u6620\u50CF\u30C8\u30E9\u30C3\u30AF\u518D\u69CB\u7BC9", true, []);
+      } catch (e) {
+        push("4. \u6620\u50CF\u30C8\u30E9\u30C3\u30AF\u518D\u69CB\u7BC9", false, [], String(e));
+        return results;
+      }
+      try {
+        await rebuildTrackSegments(
+          ppro2,
+          project,
+          cloneGuid,
+          "audio",
+          audioTrackIndex,
+          pair.audio.startTicks,
+          rebuildSegments,
+          onLog
+        );
+        push("5. \u97F3\u58F0\u30C8\u30E9\u30C3\u30AF\u518D\u69CB\u7BC9", true, []);
+      } catch (e) {
+        push("5. \u97F3\u58F0\u30C8\u30E9\u30C3\u30AF\u518D\u69CB\u7BC9", false, [], String(e));
+        return results;
+      }
+      const vAfter = await scanTrack(ppro2, project, cloneGuid, "video", videoTrackIndex);
+      const aAfter = await scanTrack(ppro2, project, cloneGuid, "audio", audioTrackIndex);
+      const notes = [];
+      let ok = vAfter.length === segments.length && aAfter.length === segments.length;
+      notes.push(`\u6620\u50CF\u30AF\u30EA\u30C3\u30D7\u6570=${vAfter.length} / \u97F3\u58F0=${aAfter.length}\uFF08\u671F\u5F85${segments.length}\uFF09`);
+      for (let i = 0; i < segments.length && ok; i++) {
+        const seg = segments[i];
+        const v = vAfter.find((c) => c.startTicks === seg.destinationStartTicks);
+        const a = aAfter.find((c) => c.startTicks === seg.destinationStartTicks);
+        if (!v || !a) {
+          ok = false;
+          notes.push(`seg${i}: dest=${seg.destinationStartTicks} \u306BV/A\u304C\u63C3\u3063\u3066\u3044\u307E\u305B\u3093`);
+          break;
+        }
+        if (v.inTicks !== seg.sourceInTicks || v.outTicks !== seg.sourceOutTicks) {
+          ok = false;
+          notes.push(`seg${i}: \u6620\u50CFIn/Out\u4E0D\u4E00\u81F4`);
+          break;
+        }
+        const drift = subtractTicks(a.startTicks, v.startTicks);
+        notes.push(`seg${i}: A/V\u540C\u671F\u5DEE=${drift} ticks`);
+        if (drift !== "0") ok = false;
+      }
+      const totalKeptMs = vAfter.reduce(
+        (sum, c) => sum + ticksToApproxMs(subtractTicks(c.endTicks, c.startTicks)),
+        0
+      );
+      notes.push(`\u518D\u69CB\u7BC9\u5F8C\u306E\u5408\u8A08\u6642\u9593: ${Math.round(totalKeptMs)}ms\uFF08\u5143${Math.round(ticksToApproxMs(clipDuration))}ms\u304B\u3089500ms\u77ED\u7E2E\u306E\u306F\u305A\uFF09`);
+      push("6. Keep Segment\u914D\u7F6E+A/V\u540C\u671F\u691C\u8A3C", ok, notes);
+      const nonTargetAfter = await nonTargetFingerprint(
+        ppro2,
+        project,
+        cloneGuid,
+        videoTrackIndex,
+        audioTrackIndex
+      );
+      push("7. \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u4E0D\u5909\u691C\u8A3C\uFF08BGM/\u30AC\u30A4\u30C9\uFF09", nonTargetBefore === nonTargetAfter, [
+        nonTargetBefore === nonTargetAfter ? "\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u306ETrackItem\u306F\u3059\u3079\u3066\u4E0D\u5909" : "\u26A0\uFE0F \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u306B\u5DEE\u5206\u304C\u3042\u308A\u307E\u3059"
+      ]);
+    } catch (e) {
+      push("Phase 3\u5B9F\u884C", false, [], String(e));
+    }
+    try {
+      const after = await sequenceFingerprint2(ppro2, project, originalGuid);
+      push("8. \u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", after === originalFingerprint, [
+        after === originalFingerprint ? "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306F\u4E00\u5207\u5909\u66F4\u3055\u308C\u3066\u3044\u307E\u305B\u3093" : "\u26A0\uFE0F \u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u306B\u5DEE\u5206\u304C\u3042\u308A\u307E\u3059"
+      ]);
+    } catch (e) {
+      push("8. \u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", false, [], String(e));
+    }
+    push("9. \u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u306E\u6271\u3044", true, [
+      `\u8907\u88FD\u300C${cloneName}\u300D\u306F\u691C\u8A3C\u7528\u306B\u6B8B\u3057\u3066\u3044\u307E\u3059\u3002`,
+      "Premiere\u3067\u958B\u3044\u3066\u518D\u751F\u3057\u3001\u6620\u50CF\u3068\u97F3\u58F0\u306E\u540C\u671F\u30FBBGM\u306E\u4F4D\u7F6E\u3092\u76EE\u8996\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002",
+      "\u554F\u984C\u306A\u3051\u308C\u3070\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u304B\u3089\u8907\u88FD\u3092\u524A\u9664\u3057\u3066OK\u3067\u3059\u3002"
+    ]);
+    return results;
+  }
+  async function nonTargetFingerprint(ppro2, project, guid, videoTrackIndex, audioTrackIndex) {
+    const parts = [];
+    for (const kind of ["video", "audio"]) {
+      const count = await trackCount(project, guid, kind);
+      for (let i = 0; i < count; i++) {
+        if (kind === "video" && i === videoTrackIndex) continue;
+        if (kind === "audio" && i === audioTrackIndex) continue;
+        const clips = await scanTrack(ppro2, project, guid, kind, i);
+        for (const c of clips) {
+          parts.push(
+            `${kind}${i}:${c.projectItemName}:${c.startTicks}-${c.endTicks}:${c.inTicks}/${c.outTicks}`
+          );
+        }
+      }
+    }
+    return parts.sort().join("|");
+  }
+
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1136" : "dev";
+  var BUILD_ID = true ? "20260712T1143" : "dev";
   var bridge = tryLoadHybridAddon() ?? new MockNativeAdapter(3e3);
   var bridgeIsMock = bridge instanceof MockNativeAdapter;
   function tryLoadPremiere() {
@@ -1560,7 +2173,8 @@
       "analyzeButton",
       "applyButton",
       "probeButton",
-      "mutatingProbeButton"
+      "mutatingProbeButton",
+      "phase3Button"
     ];
     for (const id of ids) {
       const node = document.getElementById(id);
@@ -1586,6 +2200,86 @@
     } catch (e) {
       showBanner(`API Probe\u5B8C\u4E86\uFF08${results.length}\u9805\u76EE\uFF09\u3002\u4FDD\u5B58\u5931\u6557: ${e instanceof Error ? e.message : String(e)}
 ` + json.slice(0, 500));
+    }
+  }
+  async function populateTracksFromPremiere() {
+    if (!ppro) return;
+    try {
+      const mod = ppro;
+      const project = await mod.Project.getActiveProject();
+      const seq = project ? await project.getActiveSequence() : null;
+      if (!project || !seq) return;
+      const vSel = el("videoTrackSelect");
+      const aSel = el("audioTrackSelect");
+      vSel.innerHTML = "";
+      aSel.innerHTML = "";
+      const vCount = await seq.getVideoTrackCount();
+      for (let i = 0; i < vCount; i++) {
+        const track = await seq.getVideoTrack(i);
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = `V${i + 1} (${track.name})`;
+        vSel.appendChild(opt);
+      }
+      const aCount = await seq.getAudioTrackCount();
+      for (let i = 0; i < aCount; i++) {
+        const track = await seq.getAudioTrack(i);
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = `A${i + 1} (${track.name})`;
+        aSel.appendChild(opt);
+      }
+      vSel.value = "0";
+      aSel.value = "0";
+    } catch {
+    }
+  }
+  async function runPhase3Ui() {
+    if (!ppro) {
+      showBanner("Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u5B9F\u884C\u3067\u304D\u307E\u305B\u3093\u3002");
+      return;
+    }
+    if (running) return;
+    running = true;
+    setControlsEnabled(false);
+    const videoIdx = Number(el("videoTrackSelect").value || "0");
+    const audioIdx = Number(el("audioTrackSelect").value || "0");
+    const logs = [];
+    const renderLogs = () => {
+      showBanner(
+        `500ms\u524A\u9664\u5B9F\u8A3C\u3092\u5B9F\u884C\u4E2D\uFF08V${videoIdx + 1}/A${audioIdx + 1}\uFF09...
+` + logs.slice(-8).join("\n")
+      );
+    };
+    renderLogs();
+    try {
+      const results = await runPhase3Demo(ppro, videoIdx, audioIdx, (m) => {
+        logs.push(m);
+        renderLogs();
+      });
+      results.unshift({
+        apiName: "phase3Version",
+        available: true,
+        succeeded: true,
+        notes: [`build ${BUILD_ID}`, `V${videoIdx + 1}/A${audioIdx + 1}`]
+      });
+      const okCount = results.filter((r) => r.succeeded).length;
+      const allOk = okCount === results.length;
+      const json = JSON.stringify(results, null, 2);
+      try {
+        await saveDiagnostics("phase3-result.json", json);
+        showBanner(
+          (allOk ? "\u2705 500ms\u524A\u9664\u5B9F\u8A3C: \u5168\u30B9\u30C6\u30C3\u30D7\u6210\u529F\uFF01\n" : `\u26A0\uFE0F 500ms\u524A\u9664\u5B9F\u8A3C: ${okCount}/${results.length}\u30B9\u30C6\u30C3\u30D7\u6210\u529F
+`) + "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u3001\u518D\u751F\u30FBA/V\u540C\u671F\u30FBBGM\u4F4D\u7F6E\u3092\u76EE\u8996\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002\nplugin-data\u306Ephase3-result.json\u3092\u5171\u6709\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+        );
+      } catch {
+        showBanner("\u5B9F\u8A3C\u5B8C\u4E86\uFF08\u4FDD\u5B58\u5931\u6557\u306E\u305F\u3081\u5148\u982D\u3092\u8868\u793A\uFF09:\n" + json.slice(0, 800));
+      }
+    } catch (e) {
+      showBanner(`500ms\u524A\u9664\u5B9F\u8A3C\u3067\u30A8\u30E9\u30FC: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      running = false;
+      setControlsEnabled(true);
     }
   }
   async function runMutatingProbeUi() {
@@ -1638,6 +2332,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     }
     populatePresets();
     settingsToUi();
+    void populateTracksFromPremiere();
     if (bridgeIsMock) {
       showBanner(
         "\u30CD\u30A4\u30C6\u30A3\u30D6\u30E2\u30B8\u30E5\u30FC\u30EB\u672A\u63A5\u7D9A\uFF08\u958B\u767AMock\u30E2\u30FC\u30C9\uFF09\u3002\nWindows + Hybrid SDK\u74B0\u5883\u3067\u306E\u30D3\u30EB\u30C9\u624B\u9806\u306FSDK_SETUP_REQUIRED.md\u3092\u53C2\u7167\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
@@ -1666,6 +2361,9 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     });
     on("mutatingProbeButton", () => {
       void runMutatingProbeUi();
+    });
+    on("phase3Button", () => {
+      void runPhase3Ui();
     });
     on("applyButton", () => {
       showBanner("\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u9069\u7528\u306FAPI Probe\uFF08Phase 2\u5B9F\u6A5F\u691C\u8A3C\uFF09\u5B8C\u4E86\u5F8C\u306B\u6709\u52B9\u5316\u3055\u308C\u307E\u3059\u3002");

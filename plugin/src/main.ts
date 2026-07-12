@@ -15,6 +15,8 @@ import { builtInPresets, validateSettings } from "./state/presets";
 import { defaultState, type StoredState } from "./state/settingsStore";
 import { runApiProbe } from "./premiere/apiProbe";
 import { runMutatingProbe } from "./premiere/mutatingProbe";
+import { runPhase3Demo } from "./premiere/phase3Demo";
+import type { PproModule } from "./premiere/pproTypes";
 import { msToTicks } from "./ticks";
 import type { AnalysisSettings, CutCandidate, NativeBridge, Preset } from "./types";
 
@@ -293,7 +295,7 @@ function setControlsEnabled(enabled: boolean): void {
   const ids = [
     "scopeSelect", "videoTrackSelect", "audioTrackSelect", "presetSelect",
     "silenceEnabled", "silenceMode", "retainMs", "fillerEnabled", "outputMode",
-    "analyzeButton", "applyButton", "probeButton", "mutatingProbeButton"
+    "analyzeButton", "applyButton", "probeButton", "mutatingProbeButton", "phase3Button"
   ];
   for (const id of ids) {
     const node = document.getElementById(id);
@@ -327,6 +329,92 @@ async function runProbe(): Promise<void> {
     showBanner(`API Probe完了（${results.length}項目）。plugin-dataへ保存しました。`);
   } catch (e) {
     showBanner(`API Probe完了（${results.length}項目）。保存失敗: ${e instanceof Error ? e.message : String(e)}\n` + json.slice(0, 500));
+  }
+}
+
+/** 実シーケンスのトラック一覧をドロップダウンへ反映する */
+async function populateTracksFromPremiere(): Promise<void> {
+  if (!ppro) return;
+  try {
+    const mod = ppro as unknown as PproModule;
+    const project = await mod.Project.getActiveProject();
+    const seq = project ? await project.getActiveSequence() : null;
+    if (!project || !seq) return;
+    const vSel = el<HTMLSelectElement>("videoTrackSelect");
+    const aSel = el<HTMLSelectElement>("audioTrackSelect");
+    vSel.innerHTML = "";
+    aSel.innerHTML = "";
+    const vCount = await seq.getVideoTrackCount();
+    for (let i = 0; i < vCount; i++) {
+      const track = await seq.getVideoTrack(i);
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `V${i + 1} (${track.name})`;
+      vSel.appendChild(opt);
+    }
+    const aCount = await seq.getAudioTrackCount();
+    for (let i = 0; i < aCount; i++) {
+      const track = await seq.getAudioTrack(i);
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `A${i + 1} (${track.name})`;
+      aSel.appendChild(opt);
+    }
+    vSel.value = "0";
+    aSel.value = "0";
+  } catch {
+    // シーケンス未オープン等。解析実行時に再チェックする
+  }
+}
+
+async function runPhase3Ui(): Promise<void> {
+  if (!ppro) {
+    showBanner("Premiere未接続のため実行できません。");
+    return;
+  }
+  if (running) return;
+  running = true;
+  setControlsEnabled(false);
+  const videoIdx = Number(el<HTMLSelectElement>("videoTrackSelect").value || "0");
+  const audioIdx = Number(el<HTMLSelectElement>("audioTrackSelect").value || "0");
+  const logs: string[] = [];
+  const renderLogs = (): void => {
+    showBanner(
+      `500ms削除実証を実行中（V${videoIdx + 1}/A${audioIdx + 1}）...\n` + logs.slice(-8).join("\n")
+    );
+  };
+  renderLogs();
+  try {
+    const results = await runPhase3Demo(ppro as unknown as PproModule, videoIdx, audioIdx, (m) => {
+      logs.push(m);
+      renderLogs();
+    });
+    results.unshift({
+      apiName: "phase3Version",
+      available: true,
+      succeeded: true,
+      notes: [`build ${BUILD_ID}`, `V${videoIdx + 1}/A${audioIdx + 1}`]
+    });
+    const okCount = results.filter((r) => r.succeeded).length;
+    const allOk = okCount === results.length;
+    const json = JSON.stringify(results, null, 2);
+    try {
+      await saveDiagnostics("phase3-result.json", json);
+      showBanner(
+        (allOk
+          ? "✅ 500ms削除実証: 全ステップ成功！\n"
+          : `⚠️ 500ms削除実証: ${okCount}/${results.length}ステップ成功\n`) +
+        "複製シーケンスを開いて、再生・A/V同期・BGM位置を目視確認してください。\n" +
+        "plugin-dataのphase3-result.jsonを共有してください。"
+      );
+    } catch {
+      showBanner("実証完了（保存失敗のため先頭を表示）:\n" + json.slice(0, 800));
+    }
+  } catch (e) {
+    showBanner(`500ms削除実証でエラー: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    running = false;
+    setControlsEnabled(true);
   }
 }
 
@@ -385,6 +473,7 @@ function init(): void {
 
   populatePresets();
   settingsToUi();
+  void populateTracksFromPremiere();
 
   if (bridgeIsMock) {
     showBanner(
@@ -418,6 +507,9 @@ function init(): void {
   });
   on("mutatingProbeButton", () => {
     void runMutatingProbeUi();
+  });
+  on("phase3Button", () => {
+    void runPhase3Ui();
   });
   on("applyButton", () => {
     showBanner("タイムライン適用はAPI Probe（Phase 2実機検証）完了後に有効化されます。");
