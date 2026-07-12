@@ -345,40 +345,113 @@ export async function rebuildTrackSegments(
   // （2026-07-12 Phase 3初回実行で実機検出）
   const tempGap = addTicks(originalDuration, "2540160000000");
 
-  // Segmentごとに複製→In/Out設定（位置は観測ベースで追跡）
-  const placed: { startTicks: TickString; dest: TickString }[] = [];
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (!seg) continue;
-    try {
-      let tempPos = tempBase;
-      for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
-      const cloned = await cloneClipToTemp(
-        ppro, project, guid, kind, trackIndex, originalStartTicks, tempPos
-      );
-      log(`${kind} seg${i}/${segments.length}: 複製OK`);
-      const trimmed = await setClipInOut(
-        ppro, project, guid, kind, trackIndex,
-        cloned.observedStartTicks, seg.sourceInTicks, seg.sourceOutTicks
-      );
-      log(`${kind} seg${i}/${segments.length}: In/Out設定OK`);
-      placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
-    } catch (e) {
-      throw new Error(`${kind} seg${i}/${segments.length}で失敗: ${e instanceof Error ? e.message : String(e)}`);
+  // ---- バッチ実行（トラックあたりTransaction 4回）----
+  // 2回目適用時のPremiereクラッシュを受けて、Segmentごとの逐次Transaction
+  // （3n+1回）+大量スキャンを廃止し、DOM負荷を約50分の1へ削減（2026-07-12）。
+
+  // 生アイテムスキャン（オブジェクトは即時使用のみ・保持しない）
+  const rawScan = async (): Promise<
+    { item: PproTrackItem; start: TickString; in_: TickString; out: TickString }[]
+  > => {
+    const items = await liveItems(ppro, project, guid, kind, trackIndex);
+    const out: { item: PproTrackItem; start: TickString; in_: TickString; out: TickString }[] = [];
+    for (const item of items) {
+      out.push({
+        item,
+        start: (await item.getStartTime()).ticks,
+        in_: (await item.getInPoint()).ticks,
+        out: (await item.getOutPoint()).ticks
+      });
     }
+    return out;
+  };
+  const inTempArea = (start: TickString): boolean => compareTicks(start, tempBase) >= 0;
+
+  // --- 1/4: 全Segmentを一括Clone ---
+  const tempPositions: TickString[] = segments.map((_, i) => {
+    let p = tempBase;
+    for (let k = 0; k < i; k++) p = addTicks(p, tempGap);
+    return p;
+  });
+  {
+    const scan = await rawScan();
+    const beforeStarts = new Set(scan.map((r) => r.start));
+    const src = scan.filter((r) => r.start === originalStartTicks);
+    if (src.length !== 1 || !src[0]) {
+      throw new Error(`${kind}: Clone元の特定が${src.length}件（期待1件）`);
+    }
+    const srcItem = src[0].item;
+    const srcStart = src[0].start;
+    const seqNow = await freshSequence(project, guid);
+    const editor = ppro.SequenceEditor.getEditor(seqNow);
+    runTransaction(project, "KazuCut Local：Aロールを編集（複製）", () =>
+      tempPositions.map((pos) =>
+        editor.createCloneTrackItemAction(
+          srcItem, ppro.TickTime.createWithTicks(subtractTicks(pos, srcStart)), 0, 0, true, false
+        )
+      )
+    );
+    const after = await rawScan();
+    const added = after
+      .filter((r) => !beforeStarts.has(r.start))
+      .sort((a, b) => compareTicks(a.start, b.start));
+    if (added.length !== segments.length) {
+      throw new Error(
+        `${kind}: 一括Clone後の新規TrackItemが${added.length}件（期待${segments.length}件）。中止します`
+      );
+    }
+    log(`${kind}: ${segments.length}件を一括複製OK`);
+
+    // --- 2/4: 全SegmentのIn/Outを一括設定（temp位置昇順=Segment順で対応付け） ---
+    runTransaction(project, "KazuCut Local：Aロールを編集（トリム）", () => {
+      const actions: unknown[] = [];
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const target = added[i];
+        if (!seg || !target) continue;
+        actions.push(target.item.createSetInPointAction(ppro.TickTime.createWithTicks(seg.sourceInTicks)));
+        actions.push(target.item.createSetOutPointAction(ppro.TickTime.createWithTicks(seg.sourceOutTicks)));
+      }
+      return actions;
+    });
+    log(`${kind}: In/Out一括設定OK`);
   }
 
-  // 元クリップ削除 → 各Segmentを目的位置へ
+  // --- 3/4: 元クリップ削除 ---
   await removeClipAt(ppro, project, guid, kind, trackIndex, originalStartTicks);
   log(`${kind}: 元クリップ削除OK`);
-  for (let i = 0; i < placed.length; i++) {
-    const p = placed[i];
-    if (!p) continue;
-    try {
-      await moveClipTo(ppro, project, guid, kind, trackIndex, p.startTicks, p.dest);
-      log(`${kind} seg${i}/${placed.length}: 配置OK`);
-    } catch (e) {
-      throw new Error(`${kind} seg${i}の配置で失敗: ${e instanceof Error ? e.message : String(e)}`);
+
+  // --- 4/4: 一時領域から目的位置へ一括Move（(in,out)で対応付け） ---
+  {
+    const scan = await rawScan();
+    const moves: { item: PproTrackItem; deltaTicks: TickString }[] = [];
+    for (const seg of segments) {
+      const hits = scan.filter(
+        (r) => inTempArea(r.start) && r.in_ === seg.sourceInTicks && r.out === seg.sourceOutTicks
+      );
+      if (hits.length !== 1 || !hits[0]) {
+        throw new Error(
+          `${kind}: Segment(in=${seg.sourceInTicks})の特定が${hits.length}件（期待1件）。中止します`
+        );
+      }
+      moves.push({
+        item: hits[0].item,
+        deltaTicks: subtractTicks(seg.destinationStartTicks, hits[0].start)
+      });
+    }
+    runTransaction(project, "KazuCut Local：Aロールを編集（配置）", () =>
+      moves.map((m) => m.item.createMoveAction(ppro.TickTime.createWithTicks(m.deltaTicks)))
+    );
+    log(`${kind}: ${segments.length}件を一括配置OK`);
+  }
+
+  // 着地検証
+  {
+    const finalScan = await rawScan();
+    for (const seg of segments) {
+      if (!finalScan.some((r) => r.start === seg.destinationStartTicks)) {
+        throw new Error(`${kind}: 配置検証失敗 dest=${seg.destinationStartTicks}`);
+      }
     }
   }
 }

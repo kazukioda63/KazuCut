@@ -400,6 +400,19 @@ export async function applyRealEdits(
       }
     }
 
+    // 編集結果のシーケンスをアクティブ化（ユーザーが結果をすぐ見られるように）
+    if (ok) {
+      try {
+        const edited = await freshSequence(project, targetGuid);
+        await project.setActiveSequence(edited);
+        push("編集結果シーケンスをアクティブ化", true, []);
+      } catch (e) {
+        push("編集結果シーケンスをアクティブ化", false, [
+          "手動でプロジェクトパネルから複製シーケンスを開いてください"
+        ], String(e));
+      }
+    }
+
     const summary: ApplySummary = { ok, results, editedSequenceGuid: targetGuid };
     if (backupGuid !== undefined) summary.backupSequenceGuid = backupGuid;
     if (bgmMessage !== undefined) summary.bgmOverhangMessage = bgmMessage;

@@ -1519,75 +1519,6 @@
     if (v === void 0) throw new Error("Constants.MediaType\u304C\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
     return v;
   }
-  async function cloneClipToTemp(ppro2, project, guid, kind, trackIndex, sourceStartTicks, tempPosTicks) {
-    const before = await scanTrack(ppro2, project, guid, kind, trackIndex);
-    const beforeStarts = new Set(before.map((c) => c.startTicks));
-    const item = await resolveItem(
-      ppro2,
-      project,
-      guid,
-      kind,
-      trackIndex,
-      (c) => c.start === sourceStartTicks,
-      "Clone\u5BFE\u8C61"
-    );
-    const currentStart = (await item.getStartTime()).ticks;
-    const offset = subtractTicks(tempPosTicks, currentStart);
-    const seq = await freshSequence2(project, guid);
-    const editor = ppro2.SequenceEditor.getEditor(seq);
-    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u8907\u88FD", () => [
-      editor.createCloneTrackItemAction(item, ppro2.TickTime.createWithTicks(offset), 0, 0, true, false)
-    ]);
-    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
-    const added = after.filter((c) => !beforeStarts.has(c.startTicks));
-    if (added.length !== 1 || !added[0]) {
-      throw new Error(`\u8907\u88FD\u5F8C\u306E\u65B0\u898FTrackItem\u304C${added.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`);
-    }
-    return { observedStartTicks: added[0].startTicks };
-  }
-  async function setClipInOut(ppro2, project, guid, kind, trackIndex, currentStartTicks, inTicks, outTicks) {
-    const item = await resolveItem(
-      ppro2,
-      project,
-      guid,
-      kind,
-      trackIndex,
-      (c) => c.start === currentStartTicks,
-      "In/Out\u8A2D\u5B9A\u5BFE\u8C61"
-    );
-    runTransaction2(project, "KazuCut: In/Out\u8A2D\u5B9A", () => [
-      item.createSetInPointAction(ppro2.TickTime.createWithTicks(inTicks)),
-      item.createSetOutPointAction(ppro2.TickTime.createWithTicks(outTicks))
-    ]);
-    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
-    const hits = after.filter((c) => c.inTicks === inTicks && c.outTicks === outTicks);
-    if (hits.length !== 1 || !hits[0]) {
-      throw new Error(`In/Out\u8A2D\u5B9A\u5F8C\u306E\u7279\u5B9A\u304C${hits.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`);
-    }
-    return { observedStartTicks: hits[0].startTicks };
-  }
-  async function moveClipTo(ppro2, project, guid, kind, trackIndex, currentStartTicks, destStartTicks) {
-    if (compareTicks(currentStartTicks, destStartTicks) === 0) return;
-    const item = await resolveItem(
-      ppro2,
-      project,
-      guid,
-      kind,
-      trackIndex,
-      (c) => c.start === currentStartTicks,
-      "Move\u5BFE\u8C61"
-    );
-    const delta = subtractTicks(destStartTicks, currentStartTicks);
-    runTransaction2(project, "KazuCut: \u30AF\u30EA\u30C3\u30D7\u79FB\u52D5", () => [
-      item.createMoveAction(ppro2.TickTime.createWithTicks(delta))
-    ]);
-    const after = await scanTrack(ppro2, project, guid, kind, trackIndex);
-    if (!after.some((c) => c.startTicks === destStartTicks)) {
-      throw new Error(
-        `Move\u7740\u5730\u691C\u8A3C\u5931\u6557: ${destStartTicks} \u306B\u30AF\u30EA\u30C3\u30D7\u304C\u3042\u308A\u307E\u305B\u3093\uFF08\u5B9F\u4F4D\u7F6E: ${after.map((c) => c.startTicks).join(",")}\uFF09`
-      );
-    }
-  }
   async function removeClipAt(ppro2, project, guid, kind, trackIndex, startTicks) {
     const item = await resolveItem(
       ppro2,
@@ -1656,49 +1587,103 @@
       originalDuration = subtractTicks(original.endTicks, original.startTicks);
     }
     const tempGap = addTicks(originalDuration, "2540160000000");
-    const placed = [];
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      if (!seg) continue;
-      try {
-        let tempPos = tempBase;
-        for (let k = 0; k < i; k++) tempPos = addTicks(tempPos, tempGap);
-        const cloned = await cloneClipToTemp(
-          ppro2,
-          project,
-          guid,
-          kind,
-          trackIndex,
-          originalStartTicks,
-          tempPos
-        );
-        log(`${kind} seg${i}/${segments.length}: \u8907\u88FDOK`);
-        const trimmed = await setClipInOut(
-          ppro2,
-          project,
-          guid,
-          kind,
-          trackIndex,
-          cloned.observedStartTicks,
-          seg.sourceInTicks,
-          seg.sourceOutTicks
-        );
-        log(`${kind} seg${i}/${segments.length}: In/Out\u8A2D\u5B9AOK`);
-        placed.push({ startTicks: trimmed.observedStartTicks, dest: seg.destinationStartTicks });
-      } catch (e) {
-        throw new Error(`${kind} seg${i}/${segments.length}\u3067\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`);
+    const rawScan = async () => {
+      const items = await liveItems(ppro2, project, guid, kind, trackIndex);
+      const out = [];
+      for (const item of items) {
+        out.push({
+          item,
+          start: (await item.getStartTime()).ticks,
+          in_: (await item.getInPoint()).ticks,
+          out: (await item.getOutPoint()).ticks
+        });
       }
+      return out;
+    };
+    const inTempArea = (start) => compareTicks(start, tempBase) >= 0;
+    const tempPositions = segments.map((_, i) => {
+      let p = tempBase;
+      for (let k = 0; k < i; k++) p = addTicks(p, tempGap);
+      return p;
+    });
+    {
+      const scan = await rawScan();
+      const beforeStarts = new Set(scan.map((r) => r.start));
+      const src = scan.filter((r) => r.start === originalStartTicks);
+      if (src.length !== 1 || !src[0]) {
+        throw new Error(`${kind}: Clone\u5143\u306E\u7279\u5B9A\u304C${src.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09`);
+      }
+      const srcItem = src[0].item;
+      const srcStart = src[0].start;
+      const seqNow = await freshSequence2(project, guid);
+      const editor = ppro2.SequenceEditor.getEditor(seqNow);
+      runTransaction2(
+        project,
+        "KazuCut Local\uFF1AA\u30ED\u30FC\u30EB\u3092\u7DE8\u96C6\uFF08\u8907\u88FD\uFF09",
+        () => tempPositions.map(
+          (pos) => editor.createCloneTrackItemAction(
+            srcItem,
+            ppro2.TickTime.createWithTicks(subtractTicks(pos, srcStart)),
+            0,
+            0,
+            true,
+            false
+          )
+        )
+      );
+      const after = await rawScan();
+      const added = after.filter((r) => !beforeStarts.has(r.start)).sort((a, b) => compareTicks(a.start, b.start));
+      if (added.length !== segments.length) {
+        throw new Error(
+          `${kind}: \u4E00\u62ECClone\u5F8C\u306E\u65B0\u898FTrackItem\u304C${added.length}\u4EF6\uFF08\u671F\u5F85${segments.length}\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`
+        );
+      }
+      log(`${kind}: ${segments.length}\u4EF6\u3092\u4E00\u62EC\u8907\u88FDOK`);
+      runTransaction2(project, "KazuCut Local\uFF1AA\u30ED\u30FC\u30EB\u3092\u7DE8\u96C6\uFF08\u30C8\u30EA\u30E0\uFF09", () => {
+        const actions = [];
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          const target = added[i];
+          if (!seg || !target) continue;
+          actions.push(target.item.createSetInPointAction(ppro2.TickTime.createWithTicks(seg.sourceInTicks)));
+          actions.push(target.item.createSetOutPointAction(ppro2.TickTime.createWithTicks(seg.sourceOutTicks)));
+        }
+        return actions;
+      });
+      log(`${kind}: In/Out\u4E00\u62EC\u8A2D\u5B9AOK`);
     }
     await removeClipAt(ppro2, project, guid, kind, trackIndex, originalStartTicks);
     log(`${kind}: \u5143\u30AF\u30EA\u30C3\u30D7\u524A\u9664OK`);
-    for (let i = 0; i < placed.length; i++) {
-      const p = placed[i];
-      if (!p) continue;
-      try {
-        await moveClipTo(ppro2, project, guid, kind, trackIndex, p.startTicks, p.dest);
-        log(`${kind} seg${i}/${placed.length}: \u914D\u7F6EOK`);
-      } catch (e) {
-        throw new Error(`${kind} seg${i}\u306E\u914D\u7F6E\u3067\u5931\u6557: ${e instanceof Error ? e.message : String(e)}`);
+    {
+      const scan = await rawScan();
+      const moves = [];
+      for (const seg of segments) {
+        const hits = scan.filter(
+          (r) => inTempArea(r.start) && r.in_ === seg.sourceInTicks && r.out === seg.sourceOutTicks
+        );
+        if (hits.length !== 1 || !hits[0]) {
+          throw new Error(
+            `${kind}: Segment(in=${seg.sourceInTicks})\u306E\u7279\u5B9A\u304C${hits.length}\u4EF6\uFF08\u671F\u5F851\u4EF6\uFF09\u3002\u4E2D\u6B62\u3057\u307E\u3059`
+          );
+        }
+        moves.push({
+          item: hits[0].item,
+          deltaTicks: subtractTicks(seg.destinationStartTicks, hits[0].start)
+        });
+      }
+      runTransaction2(
+        project,
+        "KazuCut Local\uFF1AA\u30ED\u30FC\u30EB\u3092\u7DE8\u96C6\uFF08\u914D\u7F6E\uFF09",
+        () => moves.map((m) => m.item.createMoveAction(ppro2.TickTime.createWithTicks(m.deltaTicks)))
+      );
+      log(`${kind}: ${segments.length}\u4EF6\u3092\u4E00\u62EC\u914D\u7F6EOK`);
+    }
+    {
+      const finalScan = await rawScan();
+      for (const seg of segments) {
+        if (!finalScan.some((r) => r.start === seg.destinationStartTicks)) {
+          throw new Error(`${kind}: \u914D\u7F6E\u691C\u8A3C\u5931\u6557 dest=${seg.destinationStartTicks}`);
+        }
       }
     }
   }
@@ -2233,6 +2218,17 @@
 \u5FC5\u8981\u306B\u5FDC\u3058\u3066Premiere\u4E0A\u3067\u77ED\u304F\u3057\u3066\u304F\u3060\u3055\u3044\u3002`;
         }
       }
+      if (ok) {
+        try {
+          const edited = await freshSequence2(project, targetGuid);
+          await project.setActiveSequence(edited);
+          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", true, []);
+        } catch (e) {
+          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", false, [
+            "\u624B\u52D5\u3067\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u304B\u3089\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u304F\u3060\u3055\u3044"
+          ], String(e));
+        }
+      }
       const summary = { ok, results, editedSequenceGuid: targetGuid };
       if (backupGuid !== void 0) summary.backupSequenceGuid = backupGuid;
       if (bgmMessage !== void 0) summary.bgmOverhangMessage = bgmMessage;
@@ -2258,7 +2254,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1244" : "dev";
+  var BUILD_ID = true ? "20260712T1251" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
