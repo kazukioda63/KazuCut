@@ -6,12 +6,28 @@ param(
     [string]$Target = ""
 )
 $ErrorActionPreference = "Continue"
-$base = "https://raw.githubusercontent.com/kazukioda63/KazuCut/claude/kazucut-local-premiere-r7craw"
+$branch = "claude/kazucut-local-premiere-r7craw"
 
 # すべての表示をデスクトップのログへも記録する（ウィンドウが閉じても読めるように）
 $logPath = "$env:USERPROFILE\Desktop\kazucut-update.log"
 try { Start-Transcript -Path $logPath -Force | Out-Null } catch { }
 Write-Host "ログ: $logPath"
+
+# raw.githubusercontent.comはブランチURLだと約5分CDNキャッシュされ、
+# プッシュ直後の更新で古いファイルが落ちてくる。
+# 最新コミットSHAを取得し、キャッシュと無関係な固定URLからダウンロードする。
+$sha = $null
+try {
+    $commit = Invoke-RestMethod -Uri "https://api.github.com/repos/kazukioda63/KazuCut/commits/$([uri]::EscapeDataString($branch))" -TimeoutSec 15
+    $sha = $commit.sha
+} catch { }
+if ($sha) {
+    $base = "https://raw.githubusercontent.com/kazukioda63/KazuCut/$sha"
+    Write-Host "最新コミット: $($sha.Substring(0,8))"
+} else {
+    $base = "https://raw.githubusercontent.com/kazukioda63/KazuCut/$branch"
+    Write-Host "注意: 最新コミットを取得できず、ブランチURLを使用します（最大5分古い可能性）" -ForegroundColor Yellow
+}
 
 # --- プラグインフォルダの自動探索 ---
 $candidates = @()
