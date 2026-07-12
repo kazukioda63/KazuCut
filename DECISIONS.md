@@ -57,3 +57,7 @@
   mingw静的リンク版kazucut-native.uxpaddonがPremiere 26.3.0実機でロード成功、
   Workerパス解決成功（「ネイティブ接続OK」）。ADR-001の実機ゲート前半クリア。
   残り: Worker実起動/キャンセル/Job Object（チェックリスト2-4,22）。
+- **D-019**（2026-07-12 実機）: **Phase 3完了**。500ms削除実証がPremiere 26.3.0実機で
+  全9ステップ成功（A/V同期0tick・合計時間=元-500ms・対象外/元シーケンス不変）。
+  ADR-003を戦略AでAcceptedへ更新。検出・修正したバグ2件: getSpeed倍率単位、
+  一時領域間隔不足によるClone上書き破壊。

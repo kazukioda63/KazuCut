@@ -1,6 +1,7 @@
 # ADR-003: タイムライン再構築戦略
 
-- Status: **Proposed**（API Probe結果で確定）
+- Status: **Accepted**（2026-07-12 Premiere 26.3.0実機で戦略Aの500ms削除実証に成功。
+  A/V同期差0 tick・対象外トラック不変・元シーケンス不変を機械検証。phase3-result.json）
 - Date: 2026-07-11
 
 ## Context
@@ -10,7 +11,10 @@ Razor/Split APIの存在を仮定しない（仕様19）。削除対象の逆集
 
 ## Decision（暫定）
 
-**戦略A（TrackItem Clone, `isInsert=false` 固定）を第一候補**として実装する。
+**戦略A（TrackItem Clone, `isInsert=false` 固定）を正式採用する。**
+実機確定事項: リンクAudio非複製（V/A個別Clone）/ Move相対オフセット /
+SetInPointは末尾固定トリム / 一時領域の間隔は元クリップ長+マージン必須 /
+DOM毎回再取得+lockedAccess内Action生成。実装: uxpTimeline.ts
 公式ドキュメントで `createCloneTrackItemAction`（insert/overwrite指定・
 オフセット指定でトラックへ複製）の存在を確認済み（REFERENCES.md参照）。
 

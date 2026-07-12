@@ -1,7 +1,7 @@
 # Progress
 
 ## Current phase
-Phase 10相当（移植可能部分）/ Phase 1・2・3の実機検証はWindows待ち
+**Phase 3完了（実機実証済み）** → 次: Phase 4-7統合（実メディアの無音解析→候補UI→適用）
 
 ## Completed
 - Phase 0: 仕様固定（PRODUCT_SPEC）/ ADR-001〜006 / REFERENCES / ビルド基盤（npm+CMake+PS1）
@@ -21,8 +21,12 @@ Phase 10相当（移植可能部分）/ Phase 1・2・3の実機検証はWindows
 ## In progress
 - なし（この環境で実行可能な作業は完了）
 
+## 実機検証済み（2026-07-12）
+- Addonロード成功（ネイティブ接続OK/Worker検出）/ API Probe読取系+変更系 /
+  **500ms削除実証 全9ステップ成功（A/V同期0tick）** → ADR-003 Accepted
+
 ## Blocked（BLOCKING_REPORT.md参照）
-- Premiere実機検証（Windows実機必要）: 同梱バイナリの動作確認 / API Probe / 500ms削除
+- Worker実起動テスト（解析ボタン）とキャンセル・強制終了・Premiere終了時挙動（チェックリスト2-4,22）
 - whisper.cpp実行統合（検証環境なしのため未統合と明示）
 - 実素材評価（素材提供待ち）
 
