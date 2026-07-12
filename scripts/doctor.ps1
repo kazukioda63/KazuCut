@@ -41,20 +41,15 @@ Check "UXP Developer Tool" {
     $udt = "$env:LOCALAPPDATA\Programs\Adobe UXP Developer Tools\Adobe UXP Developer Tool.exe"
     if (Test-Path $udt) { "インストール済み" } else { $null }
 }
-Check "UXP Hybrid Plugin SDK" {
-    $candidates = @(
-        $env:ADOBE_UXP_HYBRID_SDK,
-        "C:\Adobe\UXPHybridSDK",
-        "C:\SDK\AdobeUXPHybrid",
-        "$env:USERPROFILE\AdobeUXPHybridSDK"
-    ) | Where-Object { $_ }
-    foreach ($c in $candidates) {
-        if (Test-Path $c) {
-            $header = Get-ChildItem -Path $c -Recurse -Filter "UxpAddon.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($header) { return $c }
-        }
-    }
-    $null
+Check "UXP Addonヘッダー（同梱済み）" {
+    $vendored = "$PSScriptRoot\..\addon\third_party\uxp\api\UxpAddonShared.h"
+    if (Test-Path $vendored) { "リポジトリ同梱（外部SDKダウンロード不要）" } else { $null }
+}
+Check "同梱バイナリ" {
+    $exe = "$PSScriptRoot\..\plugin\win\x64\KazuCutWorker.exe"
+    $addon = "$PSScriptRoot\..\plugin\win\x64\kazucut-native.uxpaddon"
+    if ((Test-Path $exe) -and (Test-Path $addon)) { "ビルド不要でそのまま試せます" }
+    else { "なし（build.ps1でビルドしてください）" }
 }
 Check "Whisperモデル (任意)" {
     $models = Get-ChildItem -Path "$PSScriptRoot\..\models" -Filter "*.bin" -ErrorAction SilentlyContinue

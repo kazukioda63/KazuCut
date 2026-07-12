@@ -34,3 +34,17 @@
   テストで検出したため廃止（silence_detector.cpp）。
 - **D-013**: Worker引数は --job <file> / --job-stdin。stdinがIPCチャネルの場合は
   stdinクローズ=親死亡とみなし自己終了（孤児防止をJob Objectと二重化）。
+
+## 2026-07-12
+
+- **D-014**: UXP AddonヘッダーをリポジトリへベンダリングしSDKダウンロード手順を撤廃。
+  Adobe自身がヘッダー冒頭で再配布を許諾しており、npm bolt-uxp@1.3.10が公開再配布して
+  いる実物を取得（THIRD_PARTY_NOTICES.md）。addon_main.cppを実API
+  （addon_apis構造体 / UXP_ADDON_INIT(cb)）へ書き換え。
+- **D-015**: mingw-w64クロスコンパイルでWindows x64バイナリ（Worker/Addon）を生成し
+  plugin/win/x64/へコミット。ユーザーのセットアップを「UDTで読み込むだけ」に短縮する
+  ため。公式ビルドはMSVC（build-*.ps1）を推奨とし、mingwビルドは検証用と明記。
+  実機動作は未検証のためMANUAL_TEST_CHECKLIST 1〜4の報告を待つ。
+- **D-016**: bolt-uxp module.cppがAddon内からCreateProcess+パイプの子プロセス起動を
+  製品機能として同梱している事実を確認 → ADR-001外部Worker方式の公開前例として
+  REFERENCES.mdへ記録（実機ゲートは維持）。

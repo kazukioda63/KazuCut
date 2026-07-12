@@ -36,9 +36,9 @@ Windows専用部分はソース完成+未検証と明記する。**問題は隠�
 
 | 領域 | 状態 | 理由 |
 |---|---|---|
-| MediaFoundationAudioDecoder | ソース完成・**未コンパイル** | Windows SDKなし |
-| Hybrid Addon（JobManager+バインディング） | ソース+CMake完成・**未コンパイル** | Hybrid SDK未取得（Adobeアカウント必要） |
-| addon_main.cppのSDK API名 | Node-API類似前提で記述 | SDKヘッダー実物で要突き合わせ（ファイル冒頭に明記） |
+| MediaFoundationAudioDecoder | mingw-w64クロスコンパイル**成功**・実行未検証 | Premiere/Windows実機なし |
+| Hybrid Addon（JobManager+バインディング） | 実SDKヘッダー（同梱）でクロスコンパイル**成功**、uxp_addon_init/terminateエクスポート確認・Premiereロード未検証 | Premiere実機なし |
+| 同梱バイナリ（plugin/win/x64/） | KazuCutWorker.exe / kazucut-native.uxpaddon をコミット済み | mingwビルド。実機動作報告待ち。公式ビルドはMSVC推奨 |
 | UXPパネルのPremiere実機表示 | manifest v6+UI完成 | Premiere実機なし |
 | uxpPremiereAdapter（実DOM操作） | **未実装**（抽象+Mockのみ） | API Probe結果なしに実装しない方針（ADR-003） |
 | whisper.cpp実行統合 | CMakeオプションの骨組みのみ | 検証環境なし。モデル設定時は「未対応」を明示エラー |
@@ -69,16 +69,16 @@ Windows専用部分はソース完成+未検証と明記する。**問題は隠�
 
 ## Known Issues
 
-1. Addon未ビルドのため、実機ではパネルがMockモード表示になる（バナーで明示）
+1. 同梱バイナリはmingwクロスコンパイル産で実機未検証。ロード失敗時はMockモードバナーが出る（実機報告待ち）
 2. `ticksToApproxMs`は表示専用（2^53超では概算）。編集位置には未使用
 3. VADは自己実装（エネルギー+ZCR）。実素材でRecall不足ならWebRTC VADへ切替（ADR-002）
 4. 1秒=254,016,000,000 ticksは実機未確認の仮定値（API ProbeのTickTime項目で検証する）
 
 ## 残りの手動作業（ユーザー）
 
-1. Hybrid Plugin SDKの取得・配置（SDK_SETUP_REQUIRED.md）
-2. Windows上で `doctor.ps1` → `bootstrap.ps1` → `build.ps1`
-3. UDTでPlugin Folder読み込み（`build\dist\KazuCutLocal`）
+1. **ビルド不要**: UDTで `plugin/manifest.json` を読み込むだけ（SDK_SETUP_REQUIRED.md 3ステップ手順）
+2. （自分でビルドする場合のみ）`doctor.ps1` → `bootstrap.ps1` → `build.ps1`
+3. または UDTで `build\dist\KazuCutLocal` を読み込み
 4. MANUAL_TEST_CHECKLIST.mdの実機テスト（特にAPI Probe → 結果を共有）
 5. 実素材3本以上+正解区間JSONの提供（tools/evaluate）
 

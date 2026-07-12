@@ -17,9 +17,20 @@
     `UxpAddon.h`（`UXP_ADDON_INIT` / `UXP_ADDON_TERMINATE` マクロ）
   - Addon APIはNode-API（napi）に意図的に類似した設計
   - Windows/macOS両対応のビルドテンプレート同梱
-- 不明点（実機・SDK取得後に確認）:
-  - AddonからのCreateProcessW可否、CCX内EXE実行可否、パッケージ後のWorkerパス解決
-  - manifest `addon` エントリの正確なスキーマ（配置パス含む）
+- 追加確認（2026-07-12）:
+  - SDKヘッダー実物を入手し `addon/third_party/uxp/` へベンダリング
+    （npm `bolt-uxp@1.3.10` 経由。Adobe再配布許諾表記あり。THIRD_PARTY_NOTICES.md）
+  - 実API: グローバル関数ではなく `addon_apis` 関数ポインタ構造体。
+    `uxp_addon_init(addon_env, addon_value exports, addon_apis&&)` /
+    `UXP_ADDON_INIT(cb)` / `UXP_ADDON_TERMINATE(cb)` マクロ（utilities/UxpAddon.h）
+  - **前例**: bolt-uxpのHybrid Addonサンプル（module.cpp）はAddon内から
+    `CreateProcessA`+パイプで子プロセスを起動する`execSync`を製品機能として同梱
+    → ADR-001の外部Worker方式に公開実装の前例あり（ただしPremiere 26.3実機での
+    自プラグイン動作確認は依然必要）
+  - mingw-w64クロスコンパイルで kazucut-native.uxpaddon のビルド・リンク成功、
+    `uxp_addon_init`/`uxp_addon_terminate` エクスポート確認（objdump）
+- 不明点（実機で確認）:
+  - Premiereロード時のAddon初期化成功・パッケージ後のWorkerパス解決
 - API Probe結果: 未実施（Windows実機必要）
 
 ## Premiere UXP API — Sequence

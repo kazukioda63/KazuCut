@@ -2,6 +2,17 @@
 
 ## 同梱（ベンダリング済み）
 
+### Adobe UXP Addon ヘッダー（UxpAddonShared.h / UxpAddonTypes.h / UxpAddon.h / UxpAddon.cpp）
+- 著作権: Copyright 2022 Adobe. All Rights Reserved.
+- 許諾: 各ファイル冒頭に「Adobe permits you to use, modify, and distribute this file
+  in accordance with the terms of the Adobe license agreement accompanying it.」と明記
+- 入手経路: npmパッケージ `bolt-uxp@1.3.10`（MIT, Hyper Brew LLC）が
+  公開再配布しているUXP Hybrid Plugin SDK由来のファイルを取得
+  （https://www.npmjs.com/package/bolt-uxp）
+- 使用目的: Hybrid Addon（kazucut-native.uxpaddon）のビルド
+- 配置: `addon/third_party/uxp/`
+- 配布ファイル: kazucut-native.uxpaddon（UxpAddon.cppを静的リンク）
+
 ### nlohmann/json 3.11.3
 - 取得元: https://github.com/nlohmann/json (tag v3.11.3)
 - ライセンス: MIT

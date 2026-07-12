@@ -1,22 +1,20 @@
 // UXP Hybrid Addon エントリポイント（kazucut-native.uxpaddon）
 //
-// ⚠️ SDK未取得のためこのファイルは一度もコンパイルされていない（SDK_SETUP_REQUIRED.md）。
-// UXP Hybrid Plugin SDKのAPIは「Node-APIに意図的に類似」と公式に説明されており
-// （docs/REFERENCES.md参照）、本ファイルはNode-API互換のシグネチャで記述している。
-// SDK配置後の初回ビルドで、SDK付属ヘッダー（UxpAddon.h / UxpAddonShared.h /
-// UxpAddonTypes.h）およびサンプルと突き合わせてシグネチャを確定すること。
-// 差異が出た場合はこのファイルのみ修正すればよい（ロジックはjob_manager.cppに分離済み）。
+// SDKヘッダーは addon/third_party/uxp/ にベンダリング済み
+// （Adobe著作・再配布許諾表記あり。入手経路はTHIRD_PARTY_NOTICES.md参照）。
+// API呼び出しは実ヘッダー（UxpAddonShared.h の addon_apis / UXP_ADDON_INIT）に
+// 一致させている。ビルド・Premiereロードの実機検証はWindows待ち（未検証）。
 
 #if defined(_WIN32)
 
-#include "UxpAddon.h"        // SDK付属（UXP_ADDON_INIT / UXP_ADDON_TERMINATE）
-#include "UxpAddonShared.h"  // SDK付属（Node-API類似のaddon API）
+#include "UxpAddon.h"  // third_party/uxp/utilities（UXP_ADDON_INIT / UxpAddonApis / Check）
 
 #include "kazucut_addon/job_manager.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -43,6 +41,33 @@ std::wstring resolveWorkerPath() {
     return path.substr(0, slash + 1) + L"KazuCutWorker.exe";
 }
 
+// ---- addon_apis ヘルパー ----
+
+std::string getStringArg(addon_env env, addon_callback_info info) {
+    size_t argc = 1;
+    addon_value argv[1] = {nullptr};
+    Check(UxpAddonApis.uxp_addon_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+    if (argc < 1 || argv[0] == nullptr) throw std::runtime_error("引数がありません");
+    size_t len = 0;
+    Check(UxpAddonApis.uxp_addon_get_value_string_utf8(env, argv[0], nullptr, 0, &len));
+    std::vector<char> buf(len + 1, '\0');
+    size_t copied = 0;
+    Check(UxpAddonApis.uxp_addon_get_value_string_utf8(env, argv[0], buf.data(), buf.size(), &copied));
+    return std::string(buf.data(), copied);
+}
+
+addon_value makeString(addon_env env, const std::string& s) {
+    addon_value v = nullptr;
+    Check(UxpAddonApis.uxp_addon_create_string_utf8(env, s.c_str(), s.size(), &v));
+    return v;
+}
+
+addon_value makeBool(addon_env env, bool b) {
+    addon_value v = nullptr;
+    Check(UxpAddonApis.uxp_addon_get_boolean(env, b, &v));
+    return v;
+}
+
 std::string utf8FromStatus(const kazucut::addon::JobStatusSnapshot& s) {
     using kazucut::addon::JobState;
     const char* state = "pending";
@@ -60,32 +85,8 @@ std::string utf8FromStatus(const kazucut::addon::JobStatusSnapshot& s) {
     return j.dump();
 }
 
-// ---- Node-API類似ヘルパー（SDKヘッダーの実シグネチャに合わせて調整すること） ----
-
-std::string getStringArg(addon_env env, addon_callback_info info) {
-    size_t argc = 1;
-    addon_value argv[1];
-    check_status(env, addon_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
-    size_t len = 0;
-    check_status(env, addon_get_value_string_utf8(env, argv[0], nullptr, 0, &len));
-    std::string out(len, '\0');
-    check_status(env, addon_get_value_string_utf8(env, argv[0], out.data(), len + 1, &len));
-    return out;
-}
-
-addon_value makeString(addon_env env, const std::string& s) {
-    addon_value v;
-    check_status(env, addon_create_string_utf8(env, s.c_str(), s.size(), &v));
-    return v;
-}
-
-addon_value makeBool(addon_env env, bool b) {
-    addon_value v;
-    check_status(env, addon_get_boolean(env, b, &v));
-    return v;
-}
-
 // ---- NativeBridge実装（plugin/src/types.tsと対応。すべて短時間で返る） ----
+// 例外は各関数の境界で捕捉し、Premiereへ伝播させない（仕様6.3 / CreateErrorFromException）
 
 addon_value GetVersion(addon_env env, addon_callback_info) {
     try {
@@ -95,9 +96,8 @@ addon_value GetVersion(addon_env env, addon_callback_info) {
                             {"workerAvailable", manager().workerAvailable()},
                             {"executionMode", "external-worker"}};
         return makeString(env, j.dump());
-    } catch (const std::exception& e) {
-        // 例外でPremiereを落とさない（仕様6.3）
-        return makeString(env, std::string("{\"error\":\"") + e.what() + "\"}");
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
@@ -105,8 +105,8 @@ addon_value HealthCheck(addon_env env, addon_callback_info) {
     try {
         nlohmann::json j = {{"ok", true}, {"workerAvailable", manager().workerAvailable()}};
         return makeString(env, j.dump());
-    } catch (const std::exception&) {
-        return makeString(env, "{\"ok\":false}");
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
@@ -116,82 +116,79 @@ addon_value StartJob(addon_env env, addon_callback_info info) {
         std::string error;
         const std::string jobId = manager().startJob(request, error);
         if (jobId.empty()) {
-            nlohmann::json j = {{"error", {{"code", error == "WORKER_NOT_FOUND"
-                                                       ? "WORKER_NOT_FOUND"
-                                                       : "WORKER_START_FAILED"},
-                                           {"developerMessage", error}}}};
+            nlohmann::json j = {{"error",
+                                 {{"code", error == "WORKER_NOT_FOUND" ? "WORKER_NOT_FOUND"
+                                                                       : "WORKER_START_FAILED"},
+                                  {"developerMessage", error}}}};
             return makeString(env, j.dump());
         }
         return makeString(env, jobId);
-    } catch (const std::exception& e) {
-        nlohmann::json j = {{"error", {{"code", "WORKER_START_FAILED"},
-                                       {"developerMessage", e.what()}}}};
-        return makeString(env, j.dump());
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
 addon_value GetJobStatus(addon_env env, addon_callback_info info) {
     try {
         return makeString(env, utf8FromStatus(manager().getStatus(getStringArg(env, info))));
-    } catch (const std::exception& e) {
-        nlohmann::json j = {{"state", "failed"},
-                            {"progress", 0},
-                            {"error", {{"code", "WORKER_PROTOCOL_ERROR"},
-                                       {"developerMessage", e.what()}}}};
-        return makeString(env, j.dump());
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
 addon_value GetJobResult(addon_env env, addon_callback_info info) {
     try {
         return makeString(env, manager().getResult(getStringArg(env, info)));
-    } catch (const std::exception&) {
-        return makeString(env, "{}");
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
 addon_value CancelJob(addon_env env, addon_callback_info info) {
     try {
         return makeBool(env, manager().cancelJob(getStringArg(env, info)));
-    } catch (const std::exception&) {
-        return makeBool(env, false);
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
 addon_value DisposeJob(addon_env env, addon_callback_info info) {
     try {
         return makeBool(env, manager().disposeJob(getStringArg(env, info)));
-    } catch (const std::exception&) {
-        return makeBool(env, false);
+    } catch (...) {
+        return CreateErrorFromException(env);
     }
 }
 
-addon_value Init(addon_env env, addon_value exports) {
+addon_value Init(addon_env env, addon_value exports, addon_apis /*addonAPIs*/) {
+    // UXP_ADDON_INITマクロがSET_ADDON_APIS済み。以後はUxpAddonApis経由で呼ぶ
     manager().setWorkerPath(resolveWorkerPath());
     const struct {
         const char* name;
-        addon_value (*fn)(addon_env, addon_callback_info);
+        addon_callback fn;
     } methods[] = {
-        {"getVersion", GetVersion},   {"healthCheck", HealthCheck},
-        {"startJob", StartJob},       {"getJobStatus", GetJobStatus},
+        {"getVersion", GetVersion},     {"healthCheck", HealthCheck},
+        {"startJob", StartJob},         {"getJobStatus", GetJobStatus},
         {"getJobResult", GetJobResult}, {"cancelJob", CancelJob},
         {"disposeJob", DisposeJob},
     };
     for (const auto& m : methods) {
-        addon_value fn;
-        check_status(env, addon_create_function(env, m.name, ADDON_AUTO_LENGTH, m.fn, nullptr, &fn));
-        check_status(env, addon_set_named_property(env, exports, m.name, fn));
+        addon_value fn = nullptr;
+        Check(UxpAddonApis.uxp_addon_create_function(env, m.name, strlen(m.name), m.fn, nullptr, &fn));
+        Check(UxpAddonApis.uxp_addon_set_named_property(env, exports, m.name, fn));
     }
     return exports;
+}
+
+void Terminate(addon_env /*env*/) {
+    // Addon終了時: 全Worker停止（Job ObjectのKILL_ON_JOB_CLOSEと二重の防御）
+    manager().disposeAll();
 }
 
 }  // namespace
 
 UXP_ADDON_INIT(Init)
 
-UXP_ADDON_TERMINATE() {
-    // Addon終了時: 全Worker停止（Job ObjectのKILL_ON_JOB_CLOSEと二重の防御）
-    manager().disposeAll();
-}
+UXP_ADDON_TERMINATE(Terminate)
 
 #endif  // _WIN32

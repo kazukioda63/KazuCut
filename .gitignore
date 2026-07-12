@@ -1,8 +1,7 @@
 node_modules/
 build/
-plugin/dist/
-plugin/win/x64/*.uxpaddon
-plugin/win/x64/*.exe
+# ビルド済み成果物は「ツール不要セットアップ」のため例外的にコミットする
+# (plugin/dist/main.js, plugin/win/x64/*.uxpaddon, *.exe は追跡対象)
 plugin/win/x64/*.dll
 models/*.bin
 models/*.gguf
@@ -10,5 +9,6 @@ models/*.gguf
 .vs/
 .vscode/
 dist/
+!plugin/dist/
 coverage/
 *.tsbuildinfo

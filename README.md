@@ -7,8 +7,9 @@ Adobe Premiere Pro 26.3.0（Windows）用のUXP Hybrid Pluginです。
 候補を確認してから安全にタイムラインへ適用します。
 処理はすべてローカルで完結します（クラウドAI・テレメトリー・APIキーなし）。
 
-> **現在の状態（0.1.0開発中）**: TypeScript層と解析エンジンは実装・テスト済みですが、
-> **Premiere実機・Hybrid Addon・Media Foundationは未検証**です。
+> **現在の状態（0.1.0開発中）**: 解析エンジンは実装・テスト済み、
+> Windows用バイナリ（Addon/Worker）もビルド・同梱済みですが、
+> **Premiere実機での動作は未検証**です。
 > 詳細は `FINAL_REPORT.md` と `BLOCKING_REPORT.md` を参照してください。
 
 ## 2. 対応環境
@@ -42,8 +43,9 @@ Adobe Premiere Pro 26.3.0（Windows）用のUXP Hybrid Pluginです。
 
 ## 7. Hybrid SDK
 
-Native Addonのビルドには Adobe UXP Hybrid Plugin SDK が必要です。
-取得・配置手順は `SDK_SETUP_REQUIRED.md` を参照してください。
+**外部SDKのダウンロードは不要です。** 必要なUXP Addonヘッダーはリポジトリに
+同梱済み（`addon/third_party/uxp/`、Adobe再配布許諾付き）で、さらにビルド済み
+バイナリも `plugin/win/x64/` に同梱しています。手順は `SDK_SETUP_REQUIRED.md`。
 
 ## 8. UXP Developer Tool
 
@@ -135,7 +137,8 @@ UDTでUnload → プラグインフォルダ削除 → `plugin-data:/` の設定
 
 ## 22. 既知の制限
 
-- **Premiere実機・Hybrid Addon・MFデコーダは未検証**（BLOCKING_REPORT.md）
+- **Premiere実機は未検証**。同梱バイナリ（Addon/Worker/MFデコーダ）は
+  クロスコンパイル成功済みだがWindows実機での動作報告待ち（BLOCKING_REPORT.md）
 - タイムライン自動適用はAPI Probe（実機）完了まで無効
 - whisper.cpp実行本体は未統合（フィラーONでモデル設定時はエラーを明示）
 - WAV以外のデコードはWindows（Media Foundation）でのみ動作予定

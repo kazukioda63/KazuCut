@@ -261,7 +261,11 @@ std::wstring JobManager::workerPath() const {
 std::string JobManager::startJob(const std::string& requestJsonUtf8, std::string& outError) {
     // リクエストの妥当性を先に検証（不正JSONを起動前に拒否）
     try {
-        (void)nlohmann::json::parse(requestJsonUtf8);
+        const auto parsed = nlohmann::json::parse(requestJsonUtf8);
+        if (!parsed.is_object()) {
+            outError = "リクエストJSONはオブジェクトである必要があります";
+            return "";
+        }
     } catch (const std::exception& e) {
         outError = std::string("リクエストJSONが不正です: ") + e.what();
         return "";
