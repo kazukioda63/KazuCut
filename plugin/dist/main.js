@@ -1487,7 +1487,9 @@
         endTicks: (await item.getEndTime()).ticks,
         inTicks: (await item.getInPoint()).ticks,
         outTicks: (await item.getOutPoint()).ticks,
-        speed: await item.getSpeed().catch(() => 100),
+        // 実機知見(2026-07-12): getSpeed()は倍率を返す（1.0=100%速度）。
+        // プロジェクト内部表現はパーセント（100=100%）のため変換する
+        speed: Math.round(await item.getSpeed().catch(() => 1) * 100),
         reversed: Boolean(await item.isSpeedReversed().catch(() => 0))
       });
     }
@@ -1916,7 +1918,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1207" : "dev";
+  var BUILD_ID = true ? "20260712T1214" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";

@@ -26,6 +26,8 @@
 | 元シーケンス不変検証 | ✅ 2回とも不変 |
 
 ### 実機知見（重要）
+- **trackItem.getSpeed()は倍率を返す**: 100%速度のクリップで1.0（パーセントではない）。
+  Phase 3実証の初回実行で「speed=1%」誤判定として検出（uxpTimeline.tsで×100変換）
 - awaitを挟んで保持したDOMオブジェクトは "The script object is no longer valid." で失効する
   → **各Mutationの直前にGUID/再スキャンで取り直す**（仕様20章の実証）
 - Action生成は project.lockedAccess() 内で行う
