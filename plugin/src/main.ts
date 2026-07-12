@@ -46,6 +46,12 @@ function el<T extends HTMLElement>(id: string): T {
   if (!node) throw new Error(`要素がありません: ${id}`);
   return node as T;
 }
+
+/** 要素が無くても初期化全体を止めないリスナー登録（HTML/JSのバージョン不一致対策） */
+function on(id: string, handler: () => void): void {
+  const node = document.getElementById(id);
+  if (node) node.addEventListener("click", handler);
+}
 const $ = {
   banner: () => el<HTMLDivElement>("banner"),
   presetSelect: () => el<HTMLSelectElement>("presetSelect"),
@@ -382,22 +388,22 @@ function init(): void {
     $.fillerSettings().style.display = $.fillerEnabled().checked ? "block" : "none";
   });
 
-  $.analyzeButton().addEventListener("click", () => {
+  on("analyzeButton", () => {
     void analyze();
   });
-  $.cancelButton().addEventListener("click", () => {
+  on("cancelButton", () => {
     abortController?.abort();
   });
-  el<HTMLButtonElement>("probeButton").addEventListener("click", () => {
+  on("probeButton", () => {
     void runProbe();
   });
-  el<HTMLButtonElement>("mutatingProbeButton").addEventListener("click", () => {
+  on("mutatingProbeButton", () => {
     void runMutatingProbeUi();
   });
-  $.applyButton().addEventListener("click", () => {
+  on("applyButton", () => {
     showBanner("タイムライン適用はAPI Probe（Phase 2実機検証）完了後に有効化されます。");
   });
-  el<HTMLButtonElement>("savePresetButton").addEventListener("click", () => {
+  on("savePresetButton", () => {
     uiToSettings();
     const name = `カスタム ${new Date().toLocaleString("ja-JP")}`;
     state.customPresets.push({
@@ -410,5 +416,28 @@ function init(): void {
   });
 }
 
-document.addEventListener("DOMContentLoaded", init);
-if (document.readyState !== "loading") init();
+/** 初期化が失敗しても白画面にせず、エラー内容を必ず表示する */
+function safeInit(): void {
+  try {
+    init();
+  } catch (e) {
+    const message = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
+    const div = document.createElement("div");
+    div.style.cssText =
+      "background:#7a1f1f;color:#fff;padding:10px;border-radius:4px;white-space:pre-wrap;margin:10px;";
+    div.textContent =
+      "パネル初期化エラー（このメッセージを開発者へ報告してください）:\n" + message;
+    document.body.insertBefore(div, document.body.firstChild);
+  }
+}
+
+window.addEventListener("error", (ev) => {
+  const div = document.createElement("div");
+  div.style.cssText =
+    "background:#7a1f1f;color:#fff;padding:8px;border-radius:4px;white-space:pre-wrap;margin:10px;";
+  div.textContent = `実行時エラー: ${ev.message} (${ev.filename ?? ""}:${ev.lineno ?? ""})`;
+  document.body.insertBefore(div, document.body.firstChild);
+});
+
+document.addEventListener("DOMContentLoaded", safeInit);
+if (document.readyState !== "loading") safeInit();

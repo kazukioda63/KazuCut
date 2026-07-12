@@ -1215,6 +1215,10 @@
     if (!node) throw new Error(`\u8981\u7D20\u304C\u3042\u308A\u307E\u305B\u3093: ${id}`);
     return node;
   }
+  function on(id, handler) {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("click", handler);
+  }
   var $ = {
     banner: () => el("banner"),
     presetSelect: () => el("presetSelect"),
@@ -1541,22 +1545,22 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
       state.currentSettings.filler.enabled = $.fillerEnabled().checked;
       $.fillerSettings().style.display = $.fillerEnabled().checked ? "block" : "none";
     });
-    $.analyzeButton().addEventListener("click", () => {
+    on("analyzeButton", () => {
       void analyze();
     });
-    $.cancelButton().addEventListener("click", () => {
+    on("cancelButton", () => {
       abortController?.abort();
     });
-    el("probeButton").addEventListener("click", () => {
+    on("probeButton", () => {
       void runProbe();
     });
-    el("mutatingProbeButton").addEventListener("click", () => {
+    on("mutatingProbeButton", () => {
       void runMutatingProbeUi();
     });
-    $.applyButton().addEventListener("click", () => {
+    on("applyButton", () => {
       showBanner("\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u9069\u7528\u306FAPI Probe\uFF08Phase 2\u5B9F\u6A5F\u691C\u8A3C\uFF09\u5B8C\u4E86\u5F8C\u306B\u6709\u52B9\u5316\u3055\u308C\u307E\u3059\u3002");
     });
-    el("savePresetButton").addEventListener("click", () => {
+    on("savePresetButton", () => {
       uiToSettings();
       const name = `\u30AB\u30B9\u30BF\u30E0 ${(/* @__PURE__ */ new Date()).toLocaleString("ja-JP")}`;
       state.customPresets.push({
@@ -1568,6 +1572,24 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
       $.presetSelect().value = name;
     });
   }
-  document.addEventListener("DOMContentLoaded", init);
-  if (document.readyState !== "loading") init();
+  function safeInit() {
+    try {
+      init();
+    } catch (e) {
+      const message = e instanceof Error ? `${e.message}
+${e.stack ?? ""}` : String(e);
+      const div = document.createElement("div");
+      div.style.cssText = "background:#7a1f1f;color:#fff;padding:10px;border-radius:4px;white-space:pre-wrap;margin:10px;";
+      div.textContent = "\u30D1\u30CD\u30EB\u521D\u671F\u5316\u30A8\u30E9\u30FC\uFF08\u3053\u306E\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u958B\u767A\u8005\u3078\u5831\u544A\u3057\u3066\u304F\u3060\u3055\u3044\uFF09:\n" + message;
+      document.body.insertBefore(div, document.body.firstChild);
+    }
+  }
+  window.addEventListener("error", (ev) => {
+    const div = document.createElement("div");
+    div.style.cssText = "background:#7a1f1f;color:#fff;padding:8px;border-radius:4px;white-space:pre-wrap;margin:10px;";
+    div.textContent = `\u5B9F\u884C\u6642\u30A8\u30E9\u30FC: ${ev.message} (${ev.filename ?? ""}:${ev.lineno ?? ""})`;
+    document.body.insertBefore(div, document.body.firstChild);
+  });
+  document.addEventListener("DOMContentLoaded", safeInit);
+  if (document.readyState !== "loading") safeInit();
 })();
