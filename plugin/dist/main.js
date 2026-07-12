@@ -1644,14 +1644,18 @@
     if (segments.length === 0) throw new Error("Keep Segment\u304C0\u4EF6");
     const seqEnd = await sequenceEndTicks(project, guid);
     const tempBase = addTicks(seqEnd, "2540160000000");
-    const tempGap = "2540160000000";
+    let originalDuration;
     {
       const clips = await scanTrack(ppro2, project, guid, kind, trackIndex);
       const inTemp = clips.filter((c) => compareTicks(c.endTicks, tempBase) > 0);
       if (inTemp.length > 0) {
         throw new Error(`\u4E00\u6642\u9818\u57DF\u304C\u7A7A\u3067\u306F\u3042\u308A\u307E\u305B\u3093\uFF08${inTemp.length}\u4EF6\uFF09`);
       }
+      const original = clips.find((c) => c.startTicks === originalStartTicks);
+      if (!original) throw new Error("\u5143\u30AF\u30EA\u30C3\u30D7\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093");
+      originalDuration = subtractTicks(original.endTicks, original.startTicks);
     }
+    const tempGap = addTicks(originalDuration, "2540160000000");
     const placed = [];
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
@@ -1918,7 +1922,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1214" : "dev";
+  var BUILD_ID = true ? "20260712T1219" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";

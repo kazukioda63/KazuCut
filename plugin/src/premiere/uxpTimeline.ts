@@ -326,16 +326,23 @@ export async function rebuildTrackSegments(
   if (segments.length === 0) throw new Error("Keep Segmentが0件");
   const seqEnd = await sequenceEndTicks(project, guid);
   const tempBase = addTicks(seqEnd, "2540160000000"); // 末尾+10秒
-  const tempGap = "2540160000000"; // Segment間10秒
 
-  // 一時領域が空であることを確認（仕様19章）
+  // 一時領域が空であることを確認（仕様19章）+ 元クリップの長さを取得
+  let originalDuration: TickString;
   {
     const clips = await scanTrack(ppro, project, guid, kind, trackIndex);
     const inTemp = clips.filter((c) => compareTicks(c.endTicks, tempBase) > 0);
     if (inTemp.length > 0) {
       throw new Error(`一時領域が空ではありません（${inTemp.length}件）`);
     }
+    const original = clips.find((c) => c.startTicks === originalStartTicks);
+    if (!original) throw new Error("元クリップが見つかりません");
+    originalDuration = subtractTicks(original.endTicks, original.startTicks);
   }
+  // 複製直後のクリップは元の長さのまま置かれるため、間隔は「元の長さ+10秒」。
+  // 10秒間隔では2つ目のClone(overwrite)が1つ目を上書きして破壊する
+  // （2026-07-12 Phase 3初回実行で実機検出）
+  const tempGap = addTicks(originalDuration, "2540160000000");
 
   // Segmentごとに複製→In/Out設定（位置は観測ベースで追跡）
   const placed: { startTicks: TickString; dest: TickString }[] = [];
