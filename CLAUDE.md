@@ -43,6 +43,13 @@ Phase 0 環境/仕様固定 → 1 Addon/Worker最小実証 → 2 API Probe → 3
 - Windows専用部(MF/Addon)はWindows実機でのみビルド検証。未検証は未検証と明記
 - Mock成功をPremiere実機成功と報告しない
 
+## 共同作業プロトコル（Codexと共有）
+
+本リポジトリはCodexとの共同開発。`AGENTS.md`（Codex用指示書・同内容のルール）と
+`WORKLOG.md`（共有作業日誌）を運用する。
+**作業開始時にWORKLOG.md末尾を読み、終了時に必ず追記**（日時/エージェント名/
+やったこと/ビルドID/未完・注意）。全体像の引き継ぎは `docs/HANDOFF.md`。
+
 ## 開発環境の注意
 
 現在のCI/開発コンテナはLinuxのため、Windowsビルド・Premiere実機・Hybrid SDKは利用不可。
