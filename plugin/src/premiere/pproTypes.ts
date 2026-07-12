@@ -111,6 +111,17 @@ export interface PproModule {
   SequenceEditor: {
     getEditor(seq: PproSequence): PproSequenceEditor;
   };
+  Markers: {
+    getMarkers(owner: PproSequence): Promise<{
+      createAddMarkerAction(
+        name: string,
+        markerType: string,
+        startTime: PproTickTime,
+        duration: PproTickTime,
+        comments: string
+      ): PproAction;
+    }>;
+  };
   ClipProjectItem: {
     cast(item: PproProjectItem): {
       getMediaFilePath(): Promise<string>;

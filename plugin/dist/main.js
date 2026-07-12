@@ -2074,7 +2074,7 @@
       }
     };
   }
-  async function applyRealEdits(ppro2, context, candidates2, outputMode, onLog) {
+  async function applyRealEdits(ppro2, context, candidates2, onLog) {
     const results = [];
     const push = (apiName, succeeded, notes, error) => {
       const r = { apiName, available: succeeded, succeeded, notes };
@@ -2087,32 +2087,14 @@
       push("\u524D\u63D0", false, [], "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
       return { ok: false, results };
     }
-    const originalGuid = context.sequenceGuid;
-    const originalFingerprint = await sequenceFingerprint2(ppro2, project, originalGuid);
-    let targetGuid;
-    let targetName = "";
-    let backupGuid;
-    if (outputMode === "duplicate") {
-      try {
-        const clone = await cloneSequenceAndIdentify(project, originalGuid);
-        targetGuid = clone.guid;
-        targetName = clone.name;
-        push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", true, [clone.name]);
-      } catch (e) {
-        push("\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u4F5C\u6210", false, [], String(e));
-        return { ok: false, results };
-      }
-    } else {
-      try {
-        const backup = await cloneSequenceAndIdentify(project, originalGuid);
-        backupGuid = backup.guid;
-        push("\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u4F5C\u6210", true, [backup.name]);
-      } catch (e) {
-        push("\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u4F5C\u6210", false, ["\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u306B\u5931\u6557\u3057\u305F\u305F\u3081\u76F4\u63A5\u7DE8\u96C6\u3092\u958B\u59CB\u3057\u307E\u305B\u3093\uFF08\u4ED5\u69D817\u7AE0\uFF09"], String(e));
-        return { ok: false, results };
-      }
-      targetGuid = originalGuid;
+    const active = await project.getActiveSequence();
+    if (!active || String(active.guid) !== context.sequenceGuid) {
+      push("\u5BFE\u8C61\u30B7\u30FC\u30B1\u30F3\u30B9\u78BA\u8A8D", false, [
+        "\u89E3\u6790\u3057\u305F\u6642\u3068\u9055\u3046\u30B7\u30FC\u30B1\u30F3\u30B9\u304C\u958B\u3044\u3066\u3044\u307E\u3059\u3002\u5BFE\u8C61\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u300C\u89E3\u6790\u3059\u308B\u300D\u304B\u3089\u3084\u308A\u76F4\u3057\u3066\u304F\u3060\u3055\u3044"
+      ]);
+      return { ok: false, results };
     }
+    const targetGuid = context.sequenceGuid;
     try {
       const vClips = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
       const aClips = await scanTrack(ppro2, project, targetGuid, "audio", context.audioTrackIndex);
@@ -2122,7 +2104,7 @@
       const a = aClips.find((c) => c.startTicks === v?.startTicks);
       if (!v || !a) {
         push("\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u518D\u89E3\u6C7A", false, [
-          "\u7DE8\u96C6\u5148\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u5BFE\u8C61\u30AF\u30EA\u30C3\u30D7\u3092\u7279\u5B9A\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F"
+          "\u89E3\u6790\u5F8C\u306B\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u304C\u5909\u66F4\u3055\u308C\u305F\u3088\u3046\u3067\u3059\u3002\u300C\u89E3\u6790\u3059\u308B\u300D\u304B\u3089\u3084\u308A\u76F4\u3057\u3066\u304F\u3060\u3055\u3044"
         ]);
         return { ok: false, results };
       }
@@ -2170,7 +2152,9 @@
         );
         push("V/A\u518D\u69CB\u7BC9", true, []);
       } catch (e) {
-        push("V/A\u518D\u69CB\u7BC9", false, [], String(e));
+        push("V/A\u518D\u69CB\u7BC9", false, [
+          "\u9014\u4E2D\u3067\u5931\u6557\u3057\u307E\u3057\u305F\u3002Ctrl+Z\uFF08\u8907\u6570\u56DE\uFF09\u3067\u9069\u7528\u524D\u306B\u623B\u305B\u307E\u3059"
+        ], String(e));
         return { ok: false, results };
       }
       const vAfter = await scanTrack(ppro2, project, targetGuid, "video", context.videoTrackIndex);
@@ -2195,10 +2179,36 @@
       const nonTargetAfter = await nonTargetFingerprint2(ppro2, project, targetGuid, context);
       push("\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u4E0D\u5909\u691C\u8A3C", nonTargetBefore === nonTargetAfter, []);
       if (nonTargetBefore !== nonTargetAfter) ok = false;
-      if (outputMode === "duplicate") {
-        const after = await sequenceFingerprint2(ppro2, project, originalGuid);
-        push("\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u4E0D\u5909\u691C\u8A3C", after === originalFingerprint, []);
-        if (after !== originalFingerprint) ok = false;
+      let cutCount = 0;
+      try {
+        const seqNow = await freshSequence2(project, targetGuid);
+        const markers = await ppro2.Markers.getMarkers(seqNow);
+        const actions = [];
+        for (let i = 1; i < segments.length; i++) {
+          const seg = segments[i];
+          const prev = segments[i - 1];
+          if (!seg || !prev) continue;
+          const removedTicks = subtractTicks(seg.sourceInTicks, prev.sourceOutTicks);
+          const removedSec = (ticksToApproxMs(removedTicks) / 1e3).toFixed(2);
+          actions.push(
+            markers.createAddMarkerAction(
+              "KazuCut",
+              "Comment",
+              ppro2.TickTime.createWithTicks(seg.destinationStartTicks),
+              ppro2.TickTime.createWithTicks("0"),
+              `\u3053\u3053\u3067${removedSec}\u79D2\u30AB\u30C3\u30C8`
+            )
+          );
+          cutCount++;
+        }
+        if (actions.length > 0) {
+          runTransaction2(project, "KazuCut Local\uFF1A\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", () => actions);
+        }
+        push("\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", true, [`${cutCount}\u7B87\u6240\u3078\u30DE\u30FC\u30AB\u30FC\u300CKazuCut\u300D\u3092\u8FFD\u52A0`]);
+      } catch (e) {
+        push("\u30AB\u30C3\u30C8\u4F4D\u7F6E\u30DE\u30FC\u30AB\u30FC", false, [
+          "\u30DE\u30FC\u30AB\u30FC\u306F\u6253\u3066\u307E\u305B\u3093\u3067\u3057\u305F\u304C\u3001\u30AB\u30C3\u30C8\u81EA\u4F53\u306F\u5B8C\u4E86\u3057\u3066\u3044\u307E\u3059"
+        ], String(e));
       }
       let bgmMessage;
       {
@@ -2220,31 +2230,7 @@
 \u5FC5\u8981\u306B\u5FDC\u3058\u3066Premiere\u4E0A\u3067\u77ED\u304F\u3057\u3066\u304F\u3060\u3055\u3044\u3002`;
         }
       }
-      let activated = false;
-      if (ok) {
-        try {
-          const edited = await freshSequence2(project, targetGuid);
-          const returned = await project.setActiveSequence(edited);
-          const nowActive = await project.getActiveSequence();
-          activated = returned === true && nowActive !== null && String(nowActive.guid) === targetGuid;
-          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", activated, [
-            `setActiveSequence\u623B\u308A\u5024=${String(returned)}`,
-            activated ? "\u30A2\u30AF\u30C6\u30A3\u30D6\u5316\u6210\u529F" : "\u30A2\u30AF\u30C6\u30A3\u30D6\u5316\u304C\u53CD\u6620\u3055\u308C\u307E\u305B\u3093\u3067\u3057\u305F\uFF08\u624B\u52D5\u3067\u958B\u3044\u3066\u304F\u3060\u3055\u3044\uFF09"
-          ]);
-        } catch (e) {
-          push("\u7DE8\u96C6\u7D50\u679C\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30A2\u30AF\u30C6\u30A3\u30D6\u5316", false, [
-            "\u624B\u52D5\u3067\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u304B\u3089\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u3044\u3066\u304F\u3060\u3055\u3044"
-          ], String(e));
-        }
-      }
-      const summary = {
-        ok,
-        results,
-        editedSequenceGuid: targetGuid,
-        activated
-      };
-      if (targetName) summary.editedSequenceName = targetName;
-      if (backupGuid !== void 0) summary.backupSequenceGuid = backupGuid;
+      const summary = { ok, results, cutCount, removedMs };
       if (bgmMessage !== void 0) summary.bgmOverhangMessage = bgmMessage;
       return summary;
     } catch (e) {
@@ -2268,7 +2254,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1300" : "dev";
+  var BUILD_ID = true ? "20260712T1308" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2399,7 +2385,6 @@
     el("vadSensitivity").value = String(s.silence.vadSensitivity);
     el("channelMode").value = s.silence.channelMode;
     el("transcriptSource").value = s.filler.transcriptSource;
-    el("outputMode").value = state.outputMode;
     $.fillerSettings().style.display = s.filler.enabled ? "block" : "none";
   }
   function uiToSettings() {
@@ -2410,7 +2395,6 @@
     s.silence.vadSensitivity = Number(el("vadSensitivity").value);
     s.silence.channelMode = el("channelMode").value;
     s.filler.transcriptSource = el("transcriptSource").value;
-    state.outputMode = el("outputMode").value;
   }
   function populatePresets() {
     const sel = $.presetSelect();
@@ -2577,7 +2561,7 @@
     updateSummary();
     $.applyArea().style.display = candidates.length > 0 ? "block" : "none";
     $.applyButton().disabled = analysisContext === null;
-    el("applySummary").textContent = analysisContext === null ? "Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u9069\u7528\u3067\u304D\u307E\u305B\u3093\uFF08\u5019\u88DC\u78BA\u8A8D\u306E\u30C7\u30E2\u8868\u793A\uFF09\u3002" : `\u5BFE\u8C61: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} \u30FB \u51FA\u529B: ${el("outputMode").value === "direct" ? "\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u76F4\u63A5\u7DE8\u96C6\uFF08\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3042\u308A\uFF09" : "\u8907\u88FD\u30B7\u30FC\u30B1\u30F3\u30B9\u3067\u7DE8\u96C6"} \u30FB \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF: \u5909\u66F4\u3057\u307E\u305B\u3093`;
+    el("applySummary").textContent = analysisContext === null ? "Premiere\u672A\u63A5\u7D9A\u306E\u305F\u3081\u9069\u7528\u3067\u304D\u307E\u305B\u3093\uFF08\u5019\u88DC\u78BA\u8A8D\u306E\u30C7\u30E2\u8868\u793A\uFF09\u3002" : `\u5BFE\u8C61: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} \u30FB \u3053\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u76F4\u63A5\u30AB\u30C3\u30C8\u3057\u307E\u3059\uFF08\u623B\u3059\u5834\u5408\u306FCtrl+Z\uFF09 \u30FB \u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF: \u5909\u66F4\u3057\u307E\u305B\u3093`;
   }
   function approxStartMs(c) {
     const perMs = Number(msToTicks(1));
@@ -2725,7 +2709,6 @@
     running = true;
     setControlsEnabled(false);
     uiToSettings();
-    const outputMode = state.outputMode;
     const logs = [];
     const renderLogs = () => {
       showBanner(`\u9069\u7528\u4E2D\uFF08${selected.length}\u4EF6\uFF09...
@@ -2737,7 +2720,6 @@
         ppro,
         analysisContext,
         candidates,
-        outputMode,
         (m) => {
           logs.push(m);
           renderLogs();
@@ -2749,11 +2731,11 @@
         logs.push("\uFF08\u8A3A\u65AD\u7D50\u679C\u306E\u4FDD\u5B58\u306B\u5931\u6557\uFF09");
       }
       if (summary.ok) {
-        const nameInfo = summary.editedSequenceName ? `\u7D50\u679C\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u540D: \u300C${summary.editedSequenceName}\u300D
-` : "";
-        const openInfo = summary.activated ? "\u30AB\u30C3\u30C8\u6E08\u307F\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u958B\u304D\u307E\u3057\u305F\u3002\u305D\u306E\u307E\u307E\u518D\u751F\u3057\u3066\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n" : nameInfo + "\u81EA\u52D5\u3067\u958B\u3051\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u30D1\u30CD\u30EB\u306E\u691C\u7D22\u6B04\u306B\u300C\u30B3\u30D4\u30FC\u300D\u3068\u5165\u529B\u3057\u3001\n\u4E0A\u8A18\u306E\u540D\u524D\u306E\u30B7\u30FC\u30B1\u30F3\u30B9\u3092\u30C0\u30D6\u30EB\u30AF\u30EA\u30C3\u30AF\u3067\u958B\u3044\u3066\u304F\u3060\u3055\u3044\u3002\n";
         showBanner(
-          "\u2705 \u9069\u7528\u5B8C\u4E86\u3002\u3059\u3079\u3066\u306E\u691C\u8A3C\uFF08\u914D\u7F6E\u30FBA/V\u540C\u671F\u30FB\u5BFE\u8C61\u5916\u30C8\u30E9\u30C3\u30AF\u30FB\u5143\u30B7\u30FC\u30B1\u30F3\u30B9\uFF09\u3092\u901A\u904E\u3057\u307E\u3057\u305F\u3002\n" + (outputMode === "duplicate" ? openInfo : "\u30D0\u30C3\u30AF\u30A2\u30C3\u30D7\u8907\u88FD\u3092\u4FDD\u6301\u3057\u3066\u3044\u307E\u3059\u3002\n") + (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
+          `\u2705 \u30AB\u30C3\u30C8\u5B8C\u4E86: ${summary.cutCount ?? 0}\u7B87\u6240 / ${((summary.removedMs ?? 0) / 1e3).toFixed(1)}\u79D2\u77ED\u7E2E\u3002
+\u3053\u306E\u30BF\u30A4\u30E0\u30E9\u30A4\u30F3\u4E0A\u3067\u30AB\u30C3\u30C8\u6E08\u307F\u3067\u3059\uFF08\u5207\u308C\u76EE+\u30DE\u30FC\u30AB\u30FC\u300CKazuCut\u300D\u4ED8\u304D\uFF09\u3002
+\u623B\u3059\u5834\u5408\u306F Ctrl+Z \u3092\u6570\u56DE\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002
+` + (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
         );
         analysisContext = null;
         renderCandidates([]);

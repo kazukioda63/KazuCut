@@ -16,10 +16,9 @@ import { planKeepSegments } from "../analysis/keepSegmentPlanner";
 import { resolveAvPair, type ClipInfo } from "./avPairResolver";
 import type { PproModule, PproProject } from "./pproTypes";
 import {
-  cloneSequenceAndIdentify,
   rebuildTrackSegments,
+  runTransaction,
   scanTrack,
-  sequenceFingerprint,
   trackCount,
   freshSequence,
   type LiveClip
@@ -238,18 +237,20 @@ export async function runRealAnalysis(
 export interface ApplySummary {
   ok: boolean;
   results: ProbeResult[];
-  editedSequenceGuid?: string;
-  editedSequenceName?: string;
-  activated?: boolean;
-  backupSequenceGuid?: string;
+  cutCount?: number;
+  removedMs?: number;
   bgmOverhangMessage?: string;
 }
 
+/**
+ * 選択候補を「開いているシーケンスへ直接」適用する（D-020）。
+ * 手動のカット+リップル削除と同じ結果: その場でクリップが分割され左詰めされる。
+ * カットした各位置にマーカー「KazuCut」を打つ。復元はCtrl+Z。
+ */
 export async function applyRealEdits(
   ppro: PproModule,
   context: AnalysisContext,
   candidates: CutCandidate[],
-  outputMode: "duplicate" | "direct",
   onLog: (message: string) => void
 ): Promise<ApplySummary> {
   const results: ProbeResult[] = [];
@@ -265,37 +266,18 @@ export async function applyRealEdits(
     push("前提", false, [], "プロジェクトがありません");
     return { ok: false, results };
   }
-  const originalGuid = context.sequenceGuid;
-  const originalFingerprint = await sequenceFingerprint(ppro, project, originalGuid);
-
-  // --- 出力先の準備（仕様17章） ---
-  let targetGuid: string;
-  let targetName = "";
-  let backupGuid: string | undefined;
-  if (outputMode === "duplicate") {
-    try {
-      const clone = await cloneSequenceAndIdentify(project, originalGuid);
-      targetGuid = clone.guid;
-      targetName = clone.name;
-      push("複製シーケンス作成", true, [clone.name]);
-    } catch (e) {
-      push("複製シーケンス作成", false, [], String(e));
-      return { ok: false, results };
-    }
-  } else {
-    try {
-      const backup = await cloneSequenceAndIdentify(project, originalGuid);
-      backupGuid = backup.guid;
-      push("バックアップ複製作成", true, [backup.name]);
-    } catch (e) {
-      push("バックアップ複製作成", false, ["バックアップに失敗したため直接編集を開始しません（仕様17章）"], String(e));
-      return { ok: false, results };
-    }
-    targetGuid = originalGuid;
+  // 解析した時のシーケンスが今もアクティブであること（別シーケンスへの誤適用防止）
+  const active = await project.getActiveSequence();
+  if (!active || String(active.guid) !== context.sequenceGuid) {
+    push("対象シーケンス確認", false, [
+      "解析した時と違うシーケンスが開いています。対象のシーケンスを開いて「解析する」からやり直してください"
+    ]);
+    return { ok: false, results };
   }
+  const targetGuid = context.sequenceGuid;
 
   try {
-    // --- 対象クリップを編集先シーケンスで再解決 ---
+    // --- 対象クリップの再解決 ---
     const vClips = await scanTrack(ppro, project, targetGuid, "video", context.videoTrackIndex);
     const aClips = await scanTrack(ppro, project, targetGuid, "audio", context.audioTrackIndex);
     const v = vClips.find(
@@ -304,7 +286,7 @@ export async function applyRealEdits(
     const a = aClips.find((c) => c.startTicks === v?.startTicks);
     if (!v || !a) {
       push("対象クリップ再解決", false, [
-        "編集先シーケンスで対象クリップを特定できませんでした"
+        "解析後にタイムラインが変更されたようです。「解析する」からやり直してください"
       ]);
       return { ok: false, results };
     }
@@ -328,7 +310,7 @@ export async function applyRealEdits(
 
     const nonTargetBefore = await nonTargetFingerprint(ppro, project, targetGuid, context);
 
-    // --- 再構築（Phase 3実証済みエンジン） ---
+    // --- 再構築（実機実証済みエンジン・直接編集） ---
     const rebuildSegments = segments.map((s) => ({
       sourceInTicks: s.sourceInTicks,
       sourceOutTicks: s.sourceOutTicks,
@@ -345,7 +327,9 @@ export async function applyRealEdits(
       );
       push("V/A再構築", true, []);
     } catch (e) {
-      push("V/A再構築", false, [], String(e));
+      push("V/A再構築", false, [
+        "途中で失敗しました。Ctrl+Z（複数回）で適用前に戻せます"
+      ], String(e));
       return { ok: false, results };
     }
 
@@ -374,10 +358,37 @@ export async function applyRealEdits(
     push("対象外トラック不変検証", nonTargetBefore === nonTargetAfter, []);
     if (nonTargetBefore !== nonTargetAfter) ok = false;
 
-    if (outputMode === "duplicate") {
-      const after = await sequenceFingerprint(ppro, project, originalGuid);
-      push("元シーケンス不変検証", after === originalFingerprint, []);
-      if (after !== originalFingerprint) ok = false;
+    // --- カット位置へマーカー（切れ目=Segment境界。失敗しても適用自体は成功扱い） ---
+    let cutCount = 0;
+    try {
+      const seqNow = await freshSequence(project, targetGuid);
+      const markers = await ppro.Markers.getMarkers(seqNow);
+      const actions: unknown[] = [];
+      for (let i = 1; i < segments.length; i++) {
+        const seg = segments[i];
+        const prev = segments[i - 1];
+        if (!seg || !prev) continue;
+        const removedTicks = subtractTicks(seg.sourceInTicks, prev.sourceOutTicks);
+        const removedSec = (ticksToApproxMs(removedTicks) / 1000).toFixed(2);
+        actions.push(
+          markers.createAddMarkerAction(
+            "KazuCut",
+            "Comment",
+            ppro.TickTime.createWithTicks(seg.destinationStartTicks),
+            ppro.TickTime.createWithTicks("0"),
+            `ここで${removedSec}秒カット`
+          )
+        );
+        cutCount++;
+      }
+      if (actions.length > 0) {
+        runTransaction(project, "KazuCut Local：カット位置マーカー", () => actions);
+      }
+      push("カット位置マーカー", true, [`${cutCount}箇所へマーカー「KazuCut」を追加`]);
+    } catch (e) {
+      push("カット位置マーカー", false, [
+        "マーカーは打てませんでしたが、カット自体は完了しています"
+      ], String(e));
     }
 
     // --- BGM残り情報（仕様34章・編集はしない） ---
@@ -396,39 +407,14 @@ export async function applyRealEdits(
         }
       }
       if (compareTicks(otherAudioEnd, arollEnd) > 0) {
-        const overhangSec =
-          ticksToApproxMs(subtractTicks(otherAudioEnd, arollEnd)) / 1000;
+        const overhangSec = ticksToApproxMs(subtractTicks(otherAudioEnd, arollEnd)) / 1000;
         bgmMessage =
           `BGMがAロールより${overhangSec.toFixed(1)}秒長く残っています。\n` +
           `必要に応じてPremiere上で短くしてください。`;
       }
     }
 
-    // 編集結果のシーケンスをアクティブ化（ユーザーが結果をすぐ見られるように）
-    let activated = false;
-    if (ok) {
-      try {
-        const edited = await freshSequence(project, targetGuid);
-        const returned = await project.setActiveSequence(edited);
-        // 戻り値だけを信用せず、実際にアクティブになったかを確認する
-        const nowActive = await project.getActiveSequence();
-        activated = returned === true && nowActive !== null && String(nowActive.guid) === targetGuid;
-        push("編集結果シーケンスをアクティブ化", activated, [
-          `setActiveSequence戻り値=${String(returned)}`,
-          activated ? "アクティブ化成功" : "アクティブ化が反映されませんでした（手動で開いてください）"
-        ]);
-      } catch (e) {
-        push("編集結果シーケンスをアクティブ化", false, [
-          "手動でプロジェクトパネルから複製シーケンスを開いてください"
-        ], String(e));
-      }
-    }
-
-    const summary: ApplySummary = {
-      ok, results, editedSequenceGuid: targetGuid, activated
-    };
-    if (targetName) summary.editedSequenceName = targetName;
-    if (backupGuid !== undefined) summary.backupSequenceGuid = backupGuid;
+    const summary: ApplySummary = { ok, results, cutCount, removedMs };
     if (bgmMessage !== undefined) summary.bgmOverhangMessage = bgmMessage;
     return summary;
   } catch (e) {

@@ -136,7 +136,6 @@ function settingsToUi(): void {
   el<HTMLSelectElement>("vadSensitivity").value = String(s.silence.vadSensitivity);
   el<HTMLSelectElement>("channelMode").value = s.silence.channelMode;
   el<HTMLSelectElement>("transcriptSource").value = s.filler.transcriptSource;
-  el<HTMLSelectElement>("outputMode").value = state.outputMode;
   // フィラーOFF時はWhisper設定を隠す・警告を出さない（仕様30章）
   $.fillerSettings().style.display = s.filler.enabled ? "block" : "none";
 }
@@ -149,7 +148,6 @@ function uiToSettings(): void {
   s.silence.vadSensitivity = Number(el<HTMLSelectElement>("vadSensitivity").value) as 0 | 1 | 2 | 3;
   s.silence.channelMode = el<HTMLSelectElement>("channelMode").value as typeof s.silence.channelMode;
   s.filler.transcriptSource = el<HTMLSelectElement>("transcriptSource").value as typeof s.filler.transcriptSource;
-  state.outputMode = el<HTMLSelectElement>("outputMode").value as "duplicate" | "direct";
 }
 
 function populatePresets(): void {
@@ -350,8 +348,7 @@ function renderCandidates(list: CutCandidate[]): void {
     analysisContext === null
       ? "Premiere未接続のため適用できません（候補確認のデモ表示）。"
       : `対象: V${analysisContext.videoTrackIndex + 1} / A${analysisContext.audioTrackIndex + 1} ・ ` +
-        `出力: ${el<HTMLSelectElement>("outputMode").value === "direct" ? "元シーケンスを直接編集（バックアップ複製あり）" : "複製シーケンスで編集"} ・ ` +
-        "対象外トラック: 変更しません";
+        "このシーケンスを直接カットします（戻す場合はCtrl+Z） ・ 対象外トラック: 変更しません";
 }
 
 function approxStartMs(c: CutCandidate): number {
@@ -512,7 +509,6 @@ async function applySelected(): Promise<void> {
   running = true;
   setControlsEnabled(false);
   uiToSettings();
-  const outputMode = state.outputMode;
   const logs: string[] = [];
   const renderLogs = (): void => {
     showBanner(`適用中（${selected.length}件）...\n` + logs.slice(-8).join("\n"));
@@ -523,7 +519,6 @@ async function applySelected(): Promise<void> {
       ppro as unknown as PproModule,
       analysisContext,
       candidates,
-      outputMode,
       (m) => {
         logs.push(m);
         renderLogs();
@@ -535,17 +530,10 @@ async function applySelected(): Promise<void> {
       logs.push("（診断結果の保存に失敗）");
     }
     if (summary.ok) {
-      const nameInfo = summary.editedSequenceName
-        ? `結果のシーケンス名: 「${summary.editedSequenceName}」\n`
-        : "";
-      const openInfo = summary.activated
-        ? "カット済みシーケンスを開きました。そのまま再生して確認してください。\n"
-        : nameInfo +
-          "自動で開けませんでした。プロジェクトパネルの検索欄に「コピー」と入力し、\n" +
-          "上記の名前のシーケンスをダブルクリックで開いてください。\n";
       showBanner(
-        "✅ 適用完了。すべての検証（配置・A/V同期・対象外トラック・元シーケンス）を通過しました。\n" +
-        (outputMode === "duplicate" ? openInfo : "バックアップ複製を保持しています。\n") +
+        `✅ カット完了: ${summary.cutCount ?? 0}箇所 / ${((summary.removedMs ?? 0) / 1000).toFixed(1)}秒短縮。\n` +
+        "このタイムライン上でカット済みです（切れ目+マーカー「KazuCut」付き）。\n" +
+        "戻す場合は Ctrl+Z を数回押してください。\n" +
         (summary.bgmOverhangMessage ? summary.bgmOverhangMessage : "")
       );
       // 適用済み候補をクリア

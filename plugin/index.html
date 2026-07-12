@@ -121,13 +121,6 @@
         <span class="muted">ms</span>
       </div>
     </div>
-    <div class="row">
-      <label>出力</label>
-      <select id="outputMode">
-        <option value="duplicate">複製シーケンスで編集</option>
-        <option value="direct">元シーケンスを直接編集（上級者向け）</option>
-      </select>
-    </div>
   </div>
 
   <details class="section">
@@ -179,9 +172,8 @@
   <div id="summaryLine"></div>
   <div class="section" id="applyArea" style="display:none">
     <div class="muted" id="applySummary"></div>
-    <div class="row">
-      <input type="checkbox" id="confirmProtect" checked disabled />
-      <span>元シーケンスを保護して編集します</span>
+    <div class="row muted">
+      <span>このシーケンスを直接カットします。戻す場合は Ctrl+Z</span>
     </div>
     <button id="applyButton">選択した候補を適用</button>
   </div>
