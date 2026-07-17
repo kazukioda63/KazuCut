@@ -1,4 +1,5 @@
 import type { CutCandidate, KeepSegment } from "../types";
+import { quantizeCutOffsets } from "./frameQuantizer";
 import {
   addTicks,
   compareTicks,
@@ -27,10 +28,15 @@ export interface ClipRange {
  *
  * destinationStartTicks は前のSegmentの終端に詰めた位置（左詰め）。
  * クリップ先頭のSequence位置(sequenceStartTicks)から開始する。
+ *
+ * frameTicks を渡すと、削除区間をクリップIn基準のフレーム境界へ安全側
+ * （カットを縮める方向）に丸める。ミリ秒由来の境界がコマの途中に落ちて
+ * 1フレーム分の空白（黒コマ）が生じるのを防ぐ（D-021）。
  */
 export function planKeepSegments(
   clip: ClipRange,
-  selectedCandidates: CutCandidate[]
+  selectedCandidates: CutCandidate[],
+  frameTicks?: TickString | null
 ): KeepSegment[] {
   // クリップ範囲内の選択済み候補のみ、開始順
   const cuts = selectedCandidates
@@ -46,6 +52,7 @@ export function planKeepSegments(
       startTicks: maxT(c.startTicks, clip.sourceInTicks),
       endTicks: minT(c.endTicks, clip.sourceOutTicks)
     }))
+    .flatMap((c) => (frameTicks ? quantizeCut(c, clip, frameTicks) : [c]))
     .sort((a, b) => compareTicks(a.startTicks, b.startTicks));
 
   // 重なり検証（mergeCandidates後は起きないはずだが防御）
@@ -87,6 +94,30 @@ export function planKeepSegments(
   }
   pushSegment(cursor, clip.sourceOutTicks);
   return segments;
+}
+
+/**
+ * 削除区間をクリップIn基準のフレーム境界へ丸める（安全側=カット縮小）。
+ * クリップ末尾まで達するカットの終端は丸めない（sourceOutの位相はクリップ固有で、
+ * 丸めると末尾に1フレーム未満の切れ端Segmentが生じるため）。
+ * 丸めて空になったカットは捨てる（そのカットを行わない）。
+ */
+function quantizeCut(
+  cut: { startTicks: TickString; endTicks: TickString },
+  clip: ClipRange,
+  frameTicks: TickString
+): { startTicks: TickString; endTicks: TickString }[] {
+  const endsAtClipEnd = compareTicks(cut.endTicks, clip.sourceOutTicks) === 0;
+  const relStart = subtractTicks(cut.startTicks, clip.sourceInTicks);
+  const relEnd = subtractTicks(cut.endTicks, clip.sourceInTicks);
+  const q = quantizeCutOffsets(relStart, relEnd, frameTicks);
+  if (!q) return [];
+  const startTicks = addTicks(clip.sourceInTicks, q.startOffsetTicks);
+  const endTicks = endsAtClipEnd
+    ? cut.endTicks
+    : addTicks(clip.sourceInTicks, q.endOffsetTicks);
+  if (compareTicks(startTicks, endTicks) >= 0) return [];
+  return [{ startTicks, endTicks }];
 }
 
 /** 残す無音を前40%/後60%で分配して削除区間を縮める */

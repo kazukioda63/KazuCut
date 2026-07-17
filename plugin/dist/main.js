@@ -1450,14 +1450,103 @@
     return null;
   }
 
+  // plugin/src/analysis/frameQuantizer.ts
+  var STANDARD_FRAME_TICKS = [
+    10594584e3,
+    // 23.976 (24000/1001)
+    10584e6,
+    // 24
+    1016064e4,
+    // 25
+    8475667200,
+    // 29.97 (30000/1001)
+    84672e5,
+    // 30
+    5292e6,
+    // 48
+    508032e4,
+    // 50
+    4237833600,
+    // 59.94 (60000/1001)
+    42336e5,
+    // 60
+    2118916800,
+    // 119.88
+    21168e5
+    // 120
+  ];
+  var TICKS_PER_SECOND = 254016e6;
+  var MIN_FRAME_TICKS = 1e9;
+  var MAX_FRAME_TICKS = 43e9;
+  function snapToStandard(ticks) {
+    for (const std of STANDARD_FRAME_TICKS) {
+      if (Math.abs(ticks - std) / std < 3e-4) return std;
+    }
+    return Math.round(ticks);
+  }
+  function parseFrameTicks(raw) {
+    const fromNumber = (v) => {
+      if (!Number.isFinite(v) || v <= 0) return null;
+      if (v > 1e6) return snapToStandard(v);
+      if (v >= 1 && v <= 240) return snapToStandard(TICKS_PER_SECOND / v);
+      if (v < 1) return snapToStandard(v * TICKS_PER_SECOND);
+      return null;
+    };
+    let ticks = null;
+    if (typeof raw === "string") {
+      if (!/^\d+$/.test(raw.trim())) return null;
+      ticks = snapToStandard(Number(raw.trim()));
+    } else if (typeof raw === "number") {
+      ticks = fromNumber(raw);
+    } else if (raw !== null && typeof raw === "object") {
+      const o = raw;
+      for (const key of ["ticksPerFrame", "value", "seconds"]) {
+        const v = o[key];
+        if (typeof v === "number") {
+          ticks = fromNumber(v);
+          if (ticks !== null) break;
+        }
+      }
+      if (ticks === null && typeof o["ticks"] === "string") {
+        return parseFrameTicks(o["ticks"]);
+      }
+    }
+    if (ticks === null) return null;
+    if (!Number.isInteger(ticks) || ticks < MIN_FRAME_TICKS || ticks > MAX_FRAME_TICKS) return null;
+    return String(ticks);
+  }
+  function frameTicksAsNumber(frameTicks) {
+    const n = Number(frameTicks);
+    if (!Number.isSafeInteger(n) || n < MIN_FRAME_TICKS || n > MAX_FRAME_TICKS) {
+      throw new Error(`\u4E0D\u6B63\u306A\u30D5\u30EC\u30FC\u30E0Tick\u9577: ${frameTicks}`);
+    }
+    return n;
+  }
+  function floorToFrame(offsetTicks, frameTicks) {
+    if (compareTicks(offsetTicks, "0") < 0) throw new Error(`\u8CA0\u306E\u30AA\u30D5\u30BB\u30C3\u30C8: ${offsetTicks}`);
+    const { remainder } = divTicksBySmallInt(offsetTicks, frameTicksAsNumber(frameTicks));
+    return subtractTicks(offsetTicks, String(remainder));
+  }
+  function ceilToFrame(offsetTicks, frameTicks) {
+    const floored = floorToFrame(offsetTicks, frameTicks);
+    if (compareTicks(floored, offsetTicks) === 0) return floored;
+    return addTicks(floored, frameTicks);
+  }
+  function quantizeCutOffsets(startOffsetTicks, endOffsetTicks, frameTicks) {
+    const s = ceilToFrame(startOffsetTicks, frameTicks);
+    const e = floorToFrame(endOffsetTicks, frameTicks);
+    if (compareTicks(s, e) >= 0) return null;
+    return { startOffsetTicks: s, endOffsetTicks: e };
+  }
+
   // plugin/src/analysis/keepSegmentPlanner.ts
-  function planKeepSegments(clip, selectedCandidates) {
+  function planKeepSegments(clip, selectedCandidates, frameTicks) {
     const cuts = selectedCandidates.filter((c) => c.selected && c.clipId === clip.clipId).map((c) => shrinkForRetention(c)).filter((c) => compareTicks(c.startTicks, c.endTicks) < 0).filter(
       (c) => compareTicks(c.endTicks, clip.sourceInTicks) > 0 && compareTicks(c.startTicks, clip.sourceOutTicks) < 0
     ).map((c) => ({
       startTicks: maxT(c.startTicks, clip.sourceInTicks),
       endTicks: minT(c.endTicks, clip.sourceOutTicks)
-    })).sort((a, b) => compareTicks(a.startTicks, b.startTicks));
+    })).flatMap((c) => frameTicks ? quantizeCut(c, clip, frameTicks) : [c]).sort((a, b) => compareTicks(a.startTicks, b.startTicks));
     for (let i = 1; i < cuts.length; i++) {
       const prev = cuts[i - 1];
       const cur = cuts[i];
@@ -1494,6 +1583,17 @@
     }
     pushSegment(cursor, clip.sourceOutTicks);
     return segments;
+  }
+  function quantizeCut(cut, clip, frameTicks) {
+    const endsAtClipEnd = compareTicks(cut.endTicks, clip.sourceOutTicks) === 0;
+    const relStart = subtractTicks(cut.startTicks, clip.sourceInTicks);
+    const relEnd = subtractTicks(cut.endTicks, clip.sourceInTicks);
+    const q = quantizeCutOffsets(relStart, relEnd, frameTicks);
+    if (!q) return [];
+    const startTicks = addTicks(clip.sourceInTicks, q.startOffsetTicks);
+    const endTicks = endsAtClipEnd ? cut.endTicks : addTicks(clip.sourceInTicks, q.endOffsetTicks);
+    if (compareTicks(startTicks, endTicks) >= 0) return [];
+    return [{ startTicks, endTicks }];
   }
   function shrinkForRetention(c) {
     if (c.retainedDurationMs <= 0) {
@@ -2010,7 +2110,7 @@
   }
 
   // plugin/src/analysis/editPlanBuilder.ts
-  function buildEditPlan(clips, candidates2) {
+  function buildEditPlan(clips, candidates2, frameTicks) {
     const sorted = [...clips].sort(
       (a, b) => compareTicks(a.sequenceStartTicks, b.sequenceStartTicks)
     );
@@ -2021,7 +2121,7 @@
         ...clip,
         sequenceStartTicks: subtractTicks(clip.sequenceStartTicks, cumulativeRemoved)
       };
-      const segments = planKeepSegments(shiftedClip, candidates2);
+      const segments = planKeepSegments(shiftedClip, candidates2, frameTicks);
       const clipDuration = subtractTicks(clip.sourceOutTicks, clip.sourceInTicks);
       const kept = segments.reduce(
         (acc, s) => addTicks(acc, s.durationTicks),
@@ -2035,6 +2135,55 @@
       cumulativeRemoved = addTicks(cumulativeRemoved, removed);
     }
     return { clips: plans, totalRemovedTicks: cumulativeRemoved };
+  }
+
+  // plugin/src/premiere/frameGrid.ts
+  async function sequenceFrameTicks(project, guid) {
+    const notes = [];
+    try {
+      const seq = await freshSequence2(project, guid);
+      if (typeof seq.getTimebase === "function") {
+        try {
+          const raw = await seq.getTimebase();
+          notes.push(`getTimebase=${JSON.stringify(raw)}`);
+          const parsed = parseFrameTicks(raw);
+          if (parsed) return { frameTicks: parsed, note: notes.join(" / ") };
+        } catch (e) {
+          notes.push(`getTimebase\u5931\u6557: ${String(e)}`);
+        }
+      } else {
+        notes.push("getTimebase\u306A\u3057");
+      }
+      if (typeof seq.getSettings === "function") {
+        try {
+          const settings = await seq.getSettings();
+          const candidates2 = [];
+          if (settings && typeof settings === "object") {
+            candidates2.push(settings["videoFrameRate"]);
+            const getter = settings["getVideoFrameRate"];
+            if (typeof getter === "function") {
+              candidates2.push(await getter.call(settings));
+            }
+          }
+          for (const raw of candidates2) {
+            if (raw === void 0 || raw === null) continue;
+            notes.push(`videoFrameRate=${JSON.stringify(raw)}`);
+            const parsed = parseFrameTicks(raw);
+            if (parsed) return { frameTicks: parsed, note: notes.join(" / ") };
+          }
+          if (candidates2.every((c) => c === void 0 || c === null)) {
+            notes.push("videoFrameRate\u306A\u3057");
+          }
+        } catch (e) {
+          notes.push(`getSettings\u5931\u6557: ${String(e)}`);
+        }
+      } else {
+        notes.push("getSettings\u306A\u3057");
+      }
+    } catch (e) {
+      notes.push(`\u30D5\u30EC\u30FC\u30E0\u30EC\u30FC\u30C8\u53D6\u5F97\u5931\u6557: ${String(e)}`);
+    }
+    return { frameTicks: null, note: notes.join(" / ") };
   }
 
   // plugin/src/premiere/realAnalysis.ts
@@ -2312,7 +2461,12 @@
         sourceOutTicks: c.videoOutTicks,
         sequenceStartTicks: c.videoStartTicks
       }));
-      const plan = buildEditPlan(clipRanges, selected);
+      const grid = await sequenceFrameTicks(project, targetGuid);
+      push("\u30D5\u30EC\u30FC\u30E0\u5883\u754C\u306E\u53D6\u5F97", grid.frameTicks !== null, [
+        grid.frameTicks !== null ? `1\u30D5\u30EC\u30FC\u30E0=${grid.frameTicks} ticks\uFF08\u30AB\u30C3\u30C8\u5883\u754C\u3092\u30B3\u30DE\u306E\u5207\u308C\u76EE\u306B\u63C3\u3048\u307E\u3059\uFF09` : "\u53D6\u5F97\u3067\u304D\u305A\u3002\u30AB\u30C3\u30C8\u5883\u754C\u306E\u4E38\u3081\u306A\u3057\u3067\u7D9A\u884C\u3057\u307E\u3059\uFF081\u30B3\u30DE\u672A\u6E80\u306E\u7A7A\u767D\u304C\u6B8B\u308B\u53EF\u80FD\u6027\uFF09",
+        grid.note
+      ]);
+      const plan = buildEditPlan(clipRanges, selected, grid.frameTicks);
       const removedMs = selected.reduce((s, c) => s + c.removalDurationMs, 0);
       push("\u7DE8\u96C6\u8A08\u753B", true, [
         `\u30AF\u30EA\u30C3\u30D7${context.clips.length}\u4EF6 / \u5019\u88DC${selected.length}\u4EF6 / \u63A8\u5B9A\u77ED\u7E2E ${(removedMs / 1e3).toFixed(1)}\u79D2`
@@ -2489,7 +2643,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260712T1343" : "dev";
+  var BUILD_ID = true ? "20260717T1329" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";

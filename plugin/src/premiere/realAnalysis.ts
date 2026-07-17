@@ -16,6 +16,7 @@ import { mergeCandidates } from "../analysis/candidateMerger";
 import { buildEditPlan } from "../analysis/editPlanBuilder";
 import type { ClipRange } from "../analysis/keepSegmentPlanner";
 import { resolveAvPair, type ClipInfo } from "./avPairResolver";
+import { sequenceFrameTicks } from "./frameGrid";
 import type { PproModule, PproProject } from "./pproTypes";
 import { clipTrackItemType } from "./pproTypes";
 import {
@@ -400,7 +401,16 @@ export async function applyRealEdits(
       sourceOutTicks: c.videoOutTicks,
       sequenceStartTicks: c.videoStartTicks
     }));
-    const plan = buildEditPlan(clipRanges, selected);
+    // カット境界をフレーム境界へ丸める（1コマ分の空白防止・D-021）。
+    // 取得できない環境では丸めなしで続行（従来動作）し、診断noteに理由を残す
+    const grid = await sequenceFrameTicks(project, targetGuid);
+    push("フレーム境界の取得", grid.frameTicks !== null, [
+      grid.frameTicks !== null
+        ? `1フレーム=${grid.frameTicks} ticks（カット境界をコマの切れ目に揃えます）`
+        : "取得できず。カット境界の丸めなしで続行します（1コマ未満の空白が残る可能性）",
+      grid.note
+    ]);
+    const plan = buildEditPlan(clipRanges, selected, grid.frameTicks);
     const removedMs = selected.reduce((s, c) => s + c.removalDurationMs, 0);
     push("編集計画", true, [
       `クリップ${context.clips.length}件 / 候補${selected.length}件 / 推定短縮 ${(removedMs / 1000).toFixed(1)}秒`

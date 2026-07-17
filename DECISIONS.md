@@ -66,3 +66,11 @@
   （Ctrl+Zで戻す。オーナーが明示選択）。カットした各位置へシーケンスマーカー
   「KazuCut」を打つ（Markers.createAddMarkerAction、公式Doc確認済み）。
   PRODUCT_SPEC 3.3/17/27/32章とCLAUDE.md安全条件1を改定。
+- **D-021**（2026-07-17）: カット境界の**フレーム量子化**を導入。無音境界はミリ秒由来で
+  フレーム境界に揃わず、Premiereはコマの途中の編集点も受理するため、適用結果に
+  1コマ分の空白（黒フレーム）が見えることがあった（オーナー報告）。対策として適用時に
+  削除区間をクリップIn基準のフレーム境界へ安全側（開始切り上げ・終了切り下げ=カット縮小）
+  に丸める（frameQuantizer.ts / keepSegmentPlanner）。1フレームのTick長は
+  Sequence.getTimebase()（第一候補）→getSettings().videoFrameRate（第二候補）で取得
+  （frameGrid.ts。**両APIとも実機未検証**）。取得失敗時は丸めなしの従来動作へ
+  フォールバックし、apply-result.jsonのnoteに生値を残して診断可能にする。

@@ -20,10 +20,12 @@ export interface EditPlan {
  * - 意図的なクリップ間ギャップは維持（ギャップ長を変えない）
  * - 前のクリップまでの累積短縮時間だけ後続クリップ全体を左へ移動
  * - 対象外トラックは対象にしない（このモジュールは対象クリップのみ扱う）
+ * - frameTicks 指定時は削除区間をフレーム境界へ丸める（D-021。詳細はkeepSegmentPlanner）
  */
 export function buildEditPlan(
   clips: ClipRange[],
-  candidates: CutCandidate[]
+  candidates: CutCandidate[],
+  frameTicks?: TickString | null
 ): EditPlan {
   const sorted = [...clips].sort((a, b) =>
     compareTicks(a.sequenceStartTicks, b.sequenceStartTicks)
@@ -37,7 +39,7 @@ export function buildEditPlan(
       ...clip,
       sequenceStartTicks: subtractTicks(clip.sequenceStartTicks, cumulativeRemoved)
     };
-    const segments = planKeepSegments(shiftedClip, candidates);
+    const segments = planKeepSegments(shiftedClip, candidates, frameTicks);
     const clipDuration = subtractTicks(clip.sourceOutTicks, clip.sourceInTicks);
     const kept = segments.reduce<TickString>(
       (acc, s) => addTicks(acc, s.durationTicks),

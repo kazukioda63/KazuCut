@@ -96,7 +96,8 @@ cp build/worker-win/KazuCutWorker.exe build/addon-win/kazucut-native.uxpaddon pl
 
 ## 現在のタスクボード（詳細は PROGRESS.md / docs/HANDOFF.md）
 
-- 直近: 複数クリップ対応（build 20260712T1343）の実機確認待ち
+- 直近: フレーム量子化＝1コマ空白修正（build 20260717T1329・D-021、
+  getTimebase等のAPI実機未検証）と複数クリップ対応の実機確認待ち
 - 次候補: プリセット実感チューニング / フィラー削除（Premiere Transcript経由が先）/
   解析キャッシュ / CCXパッケージ化 / MSVC公式ビルド
 - ブロック中: whisper.cpp実行統合（Windows検証環境の問題。BLOCKING_REPORT.md）

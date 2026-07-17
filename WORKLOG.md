@@ -36,3 +36,12 @@ Claude / Codex / オーナーの共有ログ。**全エージェントは作業�
 - ビルドID: 20260712T1343（コード変更なし）
 - 未完・注意: 複数クリップ対応（build 20260712T1343）の実機確認がまだ。
   オーナーの視聴フィードバック（切りすぎ/残しすぎ）待ち → プリセット調整に使う
+
+## 2026-07-17 13:30 (Claude Code)
+- やったこと: 1コマ分の空白バグ修正（D-021）。無音カット境界をシーケンスの
+  フレーム境界へ安全側に丸める frameQuantizer.ts / frameGrid.ts を新設し、
+  keepSegmentPlanner / buildEditPlan / applyRealEdits へ配線。テスト13件追加（計132件）
+- ビルドID: 20260717T1329
+- 未完・注意: フレームレート取得API（Sequence.getTimebase / getSettings）は実機未検証。
+  取得失敗時は丸めなしで続行し apply-result.json の「フレーム境界の取得」noteに理由が残る。
+  オーナーの実機確認待ち（複数クリップ対応 build 20260712T1343 の確認も引き続き未了）
