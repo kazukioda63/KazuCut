@@ -195,13 +195,14 @@ function populatePresets(): void {
 }
 
 // ---- 解析 ----
-async function analyze(): Promise<void> {
-  if (running) return; // 連打防止（仕様32章）
+/** 戻り値: 実解析が成功し、適用可能な候補が1件以上あるときtrue（「解析と適用」用） */
+async function analyze(): Promise<boolean> {
+  if (running) return false; // 連打防止（仕様32章）
   uiToSettings();
   const errors = validateSettings(state.currentSettings);
   if (errors.length > 0) {
     showBanner("設定エラー:\n" + errors.join("\n"));
-    return;
+    return false;
   }
   running = true;
   setControlsEnabled(false);
@@ -217,6 +218,7 @@ async function analyze(): Promise<void> {
 
   // ---- 本番経路: Premiere接続 + ネイティブWorkerで実メディアの無音解析 ----
   if (ppro && !bridgeIsMock) {
+    let readyToApply = false;
     try {
       const vIdx = Number(el<HTMLSelectElement>("videoTrackSelect").value || "0");
       const aIdx = Number(el<HTMLSelectElement>("audioTrackSelect").value || "0");
@@ -245,6 +247,7 @@ async function analyze(): Promise<void> {
           `ノイズフロア ${result.context.noiseFloorDb.toFixed(1)}dB / しきい値 ${result.context.thresholdDb.toFixed(1)}dB\n` +
           "時刻クリックで確認 → 「選択した候補を適用」を押してください。"
         );
+        readyToApply = result.candidates.some((c) => c.selected);
       } else {
         analysisContext = null;
         showBanner(
@@ -259,7 +262,7 @@ async function analyze(): Promise<void> {
       setControlsEnabled(true);
       $.progressArea().style.display = "none";
     }
-    return;
+    return readyToApply;
   }
 
   try {
@@ -321,6 +324,17 @@ async function analyze(): Promise<void> {
     setControlsEnabled(true);
     $.progressArea().style.display = "none";
   }
+  return false; // Mock/接続テスト経路は適用へ進まない
+}
+
+/**
+ * 「解析と適用」: 解析→検出された候補をそのまま適用まで一気に実行する。
+ * 解析が失敗・候補0件のときはanalyze側のバナー表示のまま止まる（適用しない）。
+ */
+async function analyzeAndApply(): Promise<void> {
+  const ready = await analyze();
+  if (!ready) return;
+  await applySelected();
 }
 
 function demoCandidates(): CutCandidate[] {
@@ -426,7 +440,7 @@ function setControlsEnabled(enabled: boolean): void {
   const ids = [
     "scopeSelect", "videoTrackSelect", "audioTrackSelect", "presetSelect",
     "silenceEnabled", "silenceMode", "retainMs", "fillerEnabled", "outputMode",
-    "analyzeButton", "applyButton", "probeButton", "mutatingProbeButton", "phase3Button"
+    "analyzeButton", "analyzeApplyButton", "applyButton", "probeButton", "mutatingProbeButton", "phase3Button"
   ];
   for (const id of ids) {
     const node = document.getElementById(id);
@@ -671,8 +685,9 @@ function init(): void {
 
   populatePresets();
   settingsToUi();
-  // UXPの<select>は明示的にvalueを設定しないと未選択表示になる
-  el<HTMLSelectElement>("scopeSelect").value = "selection";
+  // UXPの<select>は明示的にvalueを設定しないと未選択表示になる。
+  // 初期値は「Aロールトラック全体」（オーナー要望2026-07-17。クリップ未選択でもすぐ使える）
+  el<HTMLSelectElement>("scopeSelect").value = "track";
   // 保存済み設定を復元してからトラック一覧を反映（トラック選択の復元に依存）
   void restoreState().then(() => populateTracksFromPremiere());
   void initBridge();
@@ -693,6 +708,9 @@ function init(): void {
     $.fillerSettings().style.display = $.fillerEnabled().checked ? "block" : "none";
   });
 
+  on("analyzeApplyButton", () => {
+    void analyzeAndApply();
+  });
   on("analyzeButton", () => {
     void analyze();
   });

@@ -64,12 +64,19 @@
   <h1>KazuCut Local</h1>
   <div id="banner"></div>
 
+  <!-- ボタンは最上部（スクロールなしで押せること） -->
   <div class="section">
+    <button id="analyzeApplyButton">解析と適用（おまかせ）</button>
+    <button class="secondary" id="analyzeButton">解析だけ</button>
+  </div>
+
+  <details class="section" id="settingsDetails">
+    <summary>⚙ 設定（対象・トラック・プリセット・無音の扱い）</summary>
     <div class="row">
       <label>対象</label>
       <select id="scopeSelect">
         <option value="selection">選択クリップ</option>
-        <option value="track">Aロールトラック全体</option>
+        <option value="track" selected>Aロールトラック全体</option>
       </select>
     </div>
     <div class="row">
@@ -121,7 +128,6 @@
         <span class="muted">ms</span>
       </div>
     </div>
-  </div>
 
   <details class="section">
     <summary>▶ 詳細設定</summary>
@@ -153,13 +159,16 @@
     <div class="row"><label>末尾無音を処理</label><input type="checkbox" id="processTrailingSilence" checked /></div>
     <div class="row"><button class="secondary" id="savePresetButton">現在の設定をプリセット保存</button></div>
   </details>
+  </details>
 
-  <div class="section">
-    <button id="analyzeButton">解析する</button>
-    <button class="secondary" id="probeButton">API Probe実行</button>
-    <button class="secondary" id="mutatingProbeButton">変更系Probe（複製上で実行）</button>
-    <button class="secondary" id="phase3Button">500ms削除実証（複製上）</button>
-  </div>
+  <details class="section">
+    <summary>🔧 診断ツール（サポート用）</summary>
+    <div class="row">
+      <button class="secondary" id="probeButton">API Probe実行</button>
+      <button class="secondary" id="mutatingProbeButton">変更系Probe（複製上で実行）</button>
+      <button class="secondary" id="phase3Button">500ms削除実証（複製上）</button>
+    </div>
+  </details>
 
   <div id="progressArea">
     <div>音声を解析中 <span id="progressPercent">0%</span></div>

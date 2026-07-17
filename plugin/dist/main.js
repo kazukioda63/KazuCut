@@ -2643,7 +2643,7 @@
   }
 
   // plugin/src/main.ts
-  var BUILD_ID = true ? "20260717T1329" : "dev";
+  var BUILD_ID = true ? "20260717T1351" : "dev";
   var bridge = new MockNativeAdapter(3e3);
   var bridgeIsMock = true;
   var addonLoadError = "";
@@ -2822,12 +2822,12 @@
     sel.value = "\u30B7\u30E7\u30FC\u30C8\u9AD8\u901F";
   }
   async function analyze() {
-    if (running) return;
+    if (running) return false;
     uiToSettings();
     const errors = validateSettings(state.currentSettings);
     if (errors.length > 0) {
       showBanner("\u8A2D\u5B9A\u30A8\u30E9\u30FC:\n" + errors.join("\n"));
-      return;
+      return false;
     }
     running = true;
     setControlsEnabled(false);
@@ -2839,6 +2839,7 @@
       el("progressStage").textContent = stage === "silence" ? "\u73FE\u5728\uFF1A\u7121\u97F3\u533A\u9593\u3092\u691C\u51FA\u3057\u3066\u3044\u307E\u3059" : "\u73FE\u5728\uFF1A\u97F3\u58F0\u3092\u8AAD\u307F\u8FBC\u3093\u3067\u3044\u307E\u3059";
     };
     if (ppro && !bridgeIsMock) {
+      let readyToApply = false;
       try {
         const vIdx = Number(el("videoTrackSelect").value || "0");
         const aIdx = Number(el("audioTrackSelect").value || "0");
@@ -2863,6 +2864,7 @@
 \u30CE\u30A4\u30BA\u30D5\u30ED\u30A2 ${result.context.noiseFloorDb.toFixed(1)}dB / \u3057\u304D\u3044\u5024 ${result.context.thresholdDb.toFixed(1)}dB
 \u6642\u523B\u30AF\u30EA\u30C3\u30AF\u3067\u78BA\u8A8D \u2192 \u300C\u9078\u629E\u3057\u305F\u5019\u88DC\u3092\u9069\u7528\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
           );
+          readyToApply = result.candidates.some((c) => c.selected);
         } else {
           analysisContext = null;
           showBanner(
@@ -2876,7 +2878,7 @@
         setControlsEnabled(true);
         $.progressArea().style.display = "none";
       }
-      return;
+      return readyToApply;
     }
     try {
       const request = {
@@ -2926,6 +2928,12 @@
       setControlsEnabled(true);
       $.progressArea().style.display = "none";
     }
+    return false;
+  }
+  async function analyzeAndApply() {
+    const ready = await analyze();
+    if (!ready) return;
+    await applySelected();
   }
   function demoCandidates() {
     const make = (id, startMs, endMs, retained) => ({
@@ -3016,6 +3024,7 @@
       "fillerEnabled",
       "outputMode",
       "analyzeButton",
+      "analyzeApplyButton",
       "applyButton",
       "probeButton",
       "mutatingProbeButton",
@@ -3239,7 +3248,7 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     }
     populatePresets();
     settingsToUi();
-    el("scopeSelect").value = "selection";
+    el("scopeSelect").value = "track";
     void restoreState().then(() => populateTracksFromPremiere());
     void initBridge();
     document.getElementById("scrollRoot")?.addEventListener("change", scheduleSave);
@@ -3254,6 +3263,9 @@ plugin-data\u306Eapi-probe-mutating.json\u3092\u5171\u6709\u3057\u3066\u304F\u30
     $.fillerEnabled().addEventListener("change", () => {
       state.currentSettings.filler.enabled = $.fillerEnabled().checked;
       $.fillerSettings().style.display = $.fillerEnabled().checked ? "block" : "none";
+    });
+    on("analyzeApplyButton", () => {
+      void analyzeAndApply();
     });
     on("analyzeButton", () => {
       void analyze();
